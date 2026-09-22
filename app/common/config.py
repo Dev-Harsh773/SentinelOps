@@ -20,6 +20,7 @@ class AppConfig:
     port: int
     demo_app_log_path: str
     source_repository_path: str
+    git_repository_path: str
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -33,6 +34,7 @@ class AppConfig:
             port=int(os.getenv("PORT", "8000")),
             demo_app_log_path=os.getenv("DEMO_APP_LOG_PATH", "runtime/demo_app.jsonl"),
             source_repository_path=os.getenv("SOURCE_REPOSITORY_PATH", "demo_app"),
+            git_repository_path=os.getenv("GIT_REPOSITORY_PATH", "."),
         )
 
 

@@ -4,32 +4,32 @@ AI-assisted software reliability and incident-response platform.
 
 ## Current Stage
 
-**Stage 4 — Repository / Source-Code Indexing**
+**Stage 5 — Git Change Intelligence**
 
 ### Current Implementation Status & Scope Note
 > **Important Scope Note:**  
-> This repository is currently at **Stage 4 only**.  
-> In this stage, SentinelOps provides deterministic, lexical repository scanning, AST-based semantic chunking, in-memory indexing, and source-code retrieval for the demo application:
-> 1. `SourceScanner` scans the configured repository path (`SOURCE_REPOSITORY_PATH=demo_app`), discovering Python (`.py`) source files while strictly ignoring non-target directories (`tests/`, `runtime/`, `.git/`, `__pycache__/`, virtual environments).
-> 2. `PythonAstParser` extracts non-overlapping semantic `CodeChunk` objects:
->    - Functions preserve decorators (e.g. `@router.post(...)`) with line ranges starting at the decorator.
->    - Classes are extracted without duplicating method bodies; methods are individually chunked with `ClassName.method_name`.
->    - Top-level statements, imports, constants, and module docstrings are extracted as module chunks without duplicating function/class bodies.
->    - Stable deterministic SHA-256 chunk IDs (`chunk-<hash>`) derived from `(file_path, symbol_name, symbol_type, start_line, end_line)`.
-> 3. `CodeIndex` maintains an in-memory index with atomic rebuilds and lexical scoring:
->    - Scoring hierarchy: Exact symbol match > symbol tokens > file path tokens > content tokens.
->    - Deterministic tie-breaking: `(-score, file_path, start_line)`.
->    - Relevance threshold: Nonsense queries return `results: []`.
+> This repository is currently at **Stage 5 only**.  
+> In this stage, SentinelOps provides deterministic, read-only local Git repository change intelligence:
+> 1. `GitClient` interacts with the local Git repository via Python's standard `subprocess` with `shell=False` and strict read-only commands (`rev-parse`, `log`, `show`, `diff-tree`).
+> 2. `GitService` coordinates repository validation, commit hash format enforcement (`^[0-9a-fA-F]{7,40}$`), path traversal protection, diff truncation (bounded at 50,000 characters), and history queries.
+> 3. Logical repository identity is exposed as `"sentinelops"`, never leaking local machine-specific physical filesystem paths.
+> 4. Endpoints exposed:
+>    - `GET /git/commits?limit=10` — List recent commits (newest first).
+>    - `GET /git/commits/{commit_hash}` — Detailed commit metadata and changed files with additions/deletions.
+>    - `GET /git/commits/{commit_hash}/diff` — Unified textual diff for the commit or a specific file, with bounded truncation.
+>    - `GET /git/files/history?path=...&limit=10` — Commit history for a specific file (including deleted files).
 > 
 > **Explicit Scope Boundary:**  
-> No embeddings, vector databases (Chroma/FAISS/Qdrant), LLMs, LangChain/LangGraph, or Git commit history analysis are used.  
-> Retrieved code is NOT automatically attached to incidents or analyzed for root-cause yet.
+> - **Local Git Only**: Operates strictly on local `.git` repository data. No GitHub APIs, GitLab APIs, tokens, or external network requests are used.
+> - **Strict Read-Only Safety**: SentinelOps never mutates Git history (no commit, push, checkout, branch, merge, reset, clean, or stash).
+> - **Factual Change Intelligence Only**: Stage 5 answers *what changed* and *when*. It does **NOT** declare causality or claim that a commit caused an incident. AI reasoning and automated root-cause analysis remain deferred to Stage 6.
 
 ---
 
 ## Prerequisites
 
 - Python 3.10+ (tested on Python 3.12)
+- Git (command-line client installed and on system PATH)
 - pip
 
 ---
@@ -83,92 +83,82 @@ uvicorn demo_app.main:app --reload --host 127.0.0.1 --port 8001
 
 ---
 
-## Stage 4 Source-Code Indexing & Retrieval Workflow
+## Stage 5 Git Change Intelligence Workflow
 
-### 1. Check Index Status (Before Indexing)
+### 1. List Recent Commits
 In Terminal:
 ```powershell
-curl.exe http://127.0.0.1:8000/repository/status
+curl.exe "http://127.0.0.1:8000/git/commits?limit=5"
 ```
 **Expected Response:**
 ```json
 {
-  "indexed": false,
-  "files_indexed": 0,
-  "chunks": 0,
-  "repository": null,
-  "indexed_at": null
+  "repository": "sentinelops",
+  "commits": [
+    {
+      "commit_hash": "ea2797a806eacc058a886f9f08cd885e3d91c668",
+      "short_hash": "ea2797a",
+      "author_name": "Dev-Harsh773",
+      "author_email": "krishringi123@gmail.com",
+      "authored_at": "2026-09-23T01:15:07+05:30",
+      "committed_at": "2026-09-23T01:15:07+05:30",
+      "message": "Initial SentinelOps implementation through Stage 4"
+    }
+  ]
 }
 ```
 
-Attempting to search before indexing returns HTTP 409 Conflict:
+### 2. Inspect Commit Details
+Replace `<commit_hash>` with your commit hash (e.g. `ea2797a` or full 40-char hash):
 ```powershell
-curl.exe --% -X POST http://127.0.0.1:8000/repository/search -H "Content-Type: application/json" -d "{\"query\":\"order processing\"}"
-```
-
-### 2. Trigger Repository Indexing
-```powershell
-curl.exe -X POST http://127.0.0.1:8000/repository/index
+curl.exe "http://127.0.0.1:8000/git/commits/ea2797a"
 ```
 **Expected Response (200 OK):**
 ```json
 {
-  "repository": "demo_app",
-  "files_discovered": 18,
-  "files_indexed": 18,
-  "files_skipped": 0,
-  "chunks_created": 38,
-  "indexed_at": "2026-09-23T..."
+  "commit": {
+    "commit_hash": "ea2797a806eacc058a886f9f08cd885e3d91c668",
+    "short_hash": "ea2797a",
+    "author_name": "Dev-Harsh773",
+    "author_email": "krishringi123@gmail.com",
+    "authored_at": "2026-09-23T01:15:07+05:30",
+    "committed_at": "2026-09-23T01:15:07+05:30",
+    "message": "Initial SentinelOps implementation through Stage 4"
+  },
+  "changed_files": [
+    {
+      "file_path": "demo_app/services/order_service.py",
+      "change_type": "added",
+      "old_path": null,
+      "additions": 67,
+      "deletions": 0
+    }
+  ]
 }
 ```
 
-### 3. Check Index Status (After Indexing)
+### 3. Inspect Commit Unified Diff
 ```powershell
-curl.exe http://127.0.0.1:8000/repository/status
+curl.exe "http://127.0.0.1:8000/git/commits/ea2797a/diff"
 ```
-**Expected Response:**
-```json
-{
-  "indexed": true,
-  "files_indexed": 18,
-  "chunks": 38,
-  "repository": "demo_app",
-  "indexed_at": "2026-09-23T..."
-}
+Or filter the diff to a specific repository-relative file path:
+```powershell
+curl.exe "http://127.0.0.1:8000/git/commits/ea2797a/diff?path=demo_app/services/order_service.py"
 ```
 
-### 4. Search by Failure Concept
+### 4. Inspect Single-File Commit History
 ```powershell
-curl.exe --% -X POST http://127.0.0.1:8000/repository/search -H "Content-Type: application/json" -d "{\"query\":\"order processing failure\",\"limit\":5}"
+curl.exe "http://127.0.0.1:8000/git/files/history?path=demo_app/services/order_service.py&limit=10"
 ```
-Returns relevant chunks from failure toggles, controllers, and order services with normalized POSIX paths (`demo_app/...`).
-
-### 5. Search by Exact Symbol Name
-```powershell
-curl.exe --% -X POST http://127.0.0.1:8000/repository/search -H "Content-Type: application/json" -d "{\"query\":\"OrderService.create_order\",\"limit\":3}"
-```
-Returns the exact method chunk at the top with a high boost score.
-
-### 6. Verify Relevance Threshold on Unrelated Queries
-```powershell
-curl.exe --% -X POST http://127.0.0.1:8000/repository/search -H "Content-Type: application/json" -d "{\"query\":\"quantum banana spaceship\"}"
-```
-**Expected Response:**
-```json
-{
-  "query": "quantum banana spaceship",
-  "total": 0,
-  "results": []
-}
-```
+Returns all commits that modified that file (including root commits and deleted files), newest first.
 
 ---
 
 ## Running Automated Tests
 
-Run the complete test suite across SentinelOps, Demo App, Telemetry, and Retrieval:
+Run the complete test suite across SentinelOps, Demo App, Telemetry, Retrieval, and Git Repository:
 
 ```powershell
 pytest -v
 ```
-All 47 tests pass with 100% success rate and zero regressions.
+All 65 tests pass with a 100% success rate and zero regressions.

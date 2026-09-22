@@ -337,4 +337,77 @@ Implemented a general, deterministic lexical ranking refinement in `CodeIndex`:
 - No AI or LLM root-cause analysis is performed yet.
 
 ### User Approval
+Approved
+
+---
+
+## Stage 5 — Git Change Intelligence
+
+### Objective
+Provide SentinelOps with deterministic, read-only local Git repository inspection capabilities to answer factual questions regarding recent commits, commit details, changed files, unified diffs, and single-file modification histories without external GitHub APIs, tokens, or automated incident causality assertions.
+
+### Design Decision
+- Pure Read-Only Local Execution: Standard library `subprocess.run` with `shell=False`, argument arrays (`["git", "-C", repo_path, ...]`), and a strict 10-second timeout. Completely avoids mutations (`checkout`, `commit`, `push`, `reset`, `branch`, etc.).
+- Layered Architecture Separation:
+  - `GitClient`: Isolated subprocess execution, machine-readable output parsing, and low-level Git commands (`rev-parse`, `log`, `diff-tree`).
+  - `GitService`: Domain business logic, commit hash regex validation (`^[0-9a-fA-F]{7,40}$`), repository-relative path traversal validation, and diff truncation limits. Free of FastAPI or HTTP imports.
+  - FastAPI Routes: Mapping domain exceptions to explicit HTTP status codes (`GitRepositoryNotFoundError` -> 500, `GitRepositoryInvalidError` -> 500, `GitCommitNotFoundError` -> 404, `GitFilePathInvalidError` -> 400).
+- Explicit Logical Repository Identity: Exposed `repository="sentinelops"` across API responses, preventing leakage of physical host filesystem paths.
+- Machine-Readable Parsing & Root-Commit Support:
+  - Formatted commit logs with `%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%cI%x1f%B%x1e` using ASCII unit (`\x1f`) and record (`\x1e`) separators.
+  - Handled root commits (commits without parents) via `git diff-tree --root -r --no-commit-id -z` for `--name-status`, `--numstat`, and textual patches (`-p`), supporting single-commit repositories seamlessly.
+  - Used null-delimited (`-z`) parsing for `name-status` and `numstat`, properly associating additions/deletions with renamed (`R`), copied (`C`), added (`A`), modified (`M`), and deleted (`D`) files.
+  - Parsed author and committer timestamps as timezone-aware ISO datetimes (`%aI`, `%cI`).
+- Path Traversal & Deleted File Safety:
+  - Enforced repository-relative POSIX paths, strictly rejecting directory traversal (`..`) and absolute drive/root paths.
+  - Path validation does not require physical file presence (`Path.exists()`), allowing full historical inspection of deleted and renamed files.
+- Bounded Diff Truncation:
+  - Unified diffs capped at 50,000 characters, cleanly slicing on newline boundaries and reporting `"truncated": true` when exceeded.
+- Test Isolation Guarantee:
+  - Automated tests run exclusively against temporary Git repositories initialized in `tmp_path`, verifying root commits, multi-commit history, renames, deletions, diffs, and validation without mutating the active project repository.
+
+### Files Added / Changed
+- `.env.example`: Added `GIT_REPOSITORY_PATH=.`.
+- `app/common/config.py`: Added `git_repository_path: str` to `AppConfig`.
+- `app/repository/models.py`: Created `GitCommit`, `ChangedFile`, `CommitDetails`, `CommitDiff`, and domain exception classes.
+- `app/repository/client.py`: Created `GitClient` with read-only subprocess execution and null-delimited format parsers.
+- `app/repository/service.py`: Created `GitService` with commit/path validators and query orchestration.
+- `app/repository/schemas.py`: Created Pydantic response models for commits, changed files, details, diffs, and file history.
+- `app/repository/dependencies.py`: Created dependency injection providers for `GitService` and `GitClient`.
+- `app/repository/routes.py`: Created endpoints for `GET /git/commits`, `GET /git/commits/{commit_hash}`, `GET /git/commits/{commit_hash}/diff`, and `GET /git/files/history`.
+- `app/repository/__init__.py`: Exported public repository domain symbols.
+- `app/api/__init__.py`: Registered `git_router` with application router.
+- `tests/test_repository.py`: Created 17 unit and API integration tests covering repository validation, root commits, commit details, path-filtered diffs, renames, deleted file history, path traversal rejection, POSIX paths, and diff truncation.
+- `README.md`: Updated to Stage 5 documentation with workflow commands, endpoint descriptions, and scope boundaries.
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 4 to Approved and added Stage 5 entry.
+
+### Problems Encountered
+1. In `test_invalid_commit_format_rejected`, an initial assertion requested `GET /git/commits/..%2F..%2Fetc`. Starlette's HTTP router normalized the URL path before reaching the endpoint, returning 404 instead of dispatching to the commit endpoint and returning 400.
+2. In initial Git diff-tree testing, root commits (such as the initial baseline commit `ea2797a`) required `--root` flag to generate diffs and changed file records against the empty tree.
+
+### Attempts
+1. Verified URL path resolution behavior in Starlette routing.
+2. Tested `git diff-tree --root` on both root and non-root commits in temporary repositories.
+
+### Final Solution
+1. Updated commit format rejection test to use `GET /git/commits/invalid..hash` and `GET /git/commits/abc;rm`, which properly route to `/git/commits/{commit_hash}` and trigger `GitCommitReferenceInvalidError` -> HTTP 400.
+2. Included `--root` in all `diff-tree` invocations in `GitClient`, providing uniform diff and changed-file behavior for both initial commits and subsequent commits.
+
+### Why It Worked
+`--root` instructs Git to treat root commits as diffs against the empty tree object, correctly enumerating all initial files as added with positive line counts.
+
+### Verification
+- Executed `pytest -v` across all 65 test cases; all 65 tests passed in 23.69s with 100% pass rate and zero regressions.
+- Verified `GET /git/commits?limit=5` on the real SentinelOps repository correctly returns the baseline commit `ea2797a` with message `"Initial SentinelOps implementation through Stage 4"` and author metadata.
+- Verified `GET /git/commits/ea2797a` returns 75 changed files with exact addition counts.
+- Verified `GET /git/commits/ea2797a/diff` returns unified diff text with `"truncated": true` (due to initial repository size exceeding 50,000 characters).
+- Verified `GET /git/files/history?path=demo_app/services/order_service.py&limit=10` returns the baseline commit.
+- Verified Stage 4 search regression test (`POST /repository/search` with `"OrderService.create_order"`) continues to return `OrderService.create_order` as the top match.
+
+### Known Limitations
+- Local Git repository data only; no remote branch synchronization or pull request metadata.
+- Textual unified diffs only; binary file modifications report metadata but omit diff content.
+- Stage 5 does not perform automated incident causality analysis or commit blame linking.
+
+### User Approval
 Pending
