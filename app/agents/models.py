@@ -6,6 +6,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+from app.memory.models import HistoricalIncidentContext
+
+
 # =====================================================================
 # Domain Exceptions
 # =====================================================================
@@ -134,6 +137,7 @@ class Investigation:
     code_analysis: Optional[CodeAnalysis] = None
     git_context: List[Dict[str, Any]] = field(default_factory=list)
     change_analysis: Optional[ChangeAnalysis] = None
+    historical_context: List[HistoricalIncidentContext] = field(default_factory=list)
     rca: Optional[RootCauseAnalysis] = None
     validation: Optional[RCAValidation] = None
     errors: List[str] = field(default_factory=list)

@@ -9,6 +9,8 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.llm import InvestigationLLM
 from app.agents.models import RCAValidation
 from app.common.config import config
+from app.memory.models import HistoricalSearchQuery
+from app.memory.service import IncidentMemoryService
 from app.repository.service import GitService
 from app.retrieval.index import RepositoryNotIndexedError
 from app.retrieval.service import RetrievalService
@@ -46,6 +48,7 @@ def synthesize_rca_node(state: InvestigationState, llm: InvestigationLLM) -> Dic
             evidence=state["runtime_evidence"],
             code_chunks=state.get("code_results", []),
             git_context=state.get("git_context", []),
+            historical_context=state.get("historical_context", []),
         )
         return {"rca": rca}
     except Exception as exc:
@@ -62,6 +65,7 @@ def build_investigation_graph(
     git_service: GitService,
     git_limit: int = 3,
     max_revisions: int = 1,
+    memory_service: Optional[IncidentMemoryService] = None,
 ) -> StateGraph:
     """Constructs and compiles the multi-node LangGraph investigation workflow."""
 
@@ -243,6 +247,45 @@ def build_investigation_graph(
                 ],
             }
 
+    def retrieve_historical_context_node(state: InvestigationState) -> Dict[str, Any]:
+        logger.info("Executing retrieve_historical_context node")
+        if memory_service is None:
+            return {"historical_context": []}
+
+        ra = state.get("runtime_analysis")
+        ca = state.get("code_analysis")
+        incident = state["incident"]
+
+        query_parts: List[str] = [incident.title]
+        if ra:
+            if ra.important_messages:
+                query_parts.extend(ra.important_messages)
+            if ra.observed_failures:
+                query_parts.extend(ra.observed_failures)
+
+        query = HistoricalSearchQuery(
+            current_incident_id=incident.id,
+            service=ra.service if ra and ra.service else incident.service,
+            environment=incident.environment,
+            exception_type=ra.exception_type if ra else None,
+            endpoint=ra.endpoint if ra else None,
+            query_text=" ".join(query_parts).strip(),
+            relevant_symbols=list(ca.relevant_symbols) if ca and ca.relevant_symbols else [],
+            relevant_files=list(ca.relevant_files) if ca and ca.relevant_files else [],
+            limit=2,
+        )
+
+        try:
+            matches = memory_service.search_history(query)
+            logger.info("Retrieved %d historical incident contexts.", len(matches))
+            return {"historical_context": matches}
+        except Exception as exc:
+            logger.warning("Historical memory retrieval failed: %s", exc)
+            return {
+                "historical_context": [],
+                "errors": list(state.get("errors", [])) + [f"Historical memory retrieval failed: {exc}"],
+            }
+
     def _synthesize_rca_node(state: InvestigationState) -> Dict[str, Any]:
         return synthesize_rca_node(state, llm)
 
@@ -310,6 +353,7 @@ def build_investigation_graph(
                 evidence=state["runtime_evidence"],
                 code_chunks=state.get("code_results", []),
                 git_context=state.get("git_context", []),
+                historical_context=state.get("historical_context", []),
             )
             return {
                 "rca": revised_rca,
@@ -330,6 +374,7 @@ def build_investigation_graph(
     workflow.add_node("analyze_code", analyze_code_node)
     workflow.add_node("retrieve_git_context", retrieve_git_context_node)
     workflow.add_node("analyze_changes", analyze_changes_node)
+    workflow.add_node("retrieve_historical_context", retrieve_historical_context_node)
     workflow.add_node("synthesize_rca", _synthesize_rca_node)
     workflow.add_node("validate_rca", validate_rca_node)
     workflow.add_node("revise_rca", revise_rca_node)
@@ -353,7 +398,8 @@ def build_investigation_graph(
         },
     )
     workflow.add_edge("retrieve_git_context", "analyze_changes")
-    workflow.add_edge("analyze_changes", "synthesize_rca")
+    workflow.add_edge("analyze_changes", "retrieve_historical_context")
+    workflow.add_edge("retrieve_historical_context", "synthesize_rca")
     workflow.add_conditional_edges(
         "synthesize_rca",
         route_after_synthesis,

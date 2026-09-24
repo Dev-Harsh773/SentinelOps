@@ -14,6 +14,7 @@ from app.agents.models import (
 )
 from app.agents.repository import InvestigationRepository
 from app.incidents.service import IncidentNotFoundError, IncidentService
+from app.memory.service import IncidentMemoryService
 from app.repository.service import GitService
 from app.retrieval.service import RetrievalService
 from app.telemetry.repository import EvidenceRepository
@@ -40,6 +41,7 @@ class InvestigationService:
         llm: InvestigationLLM,
         git_limit: int = 3,
         max_revisions: int = 1,
+        memory_service: Optional[IncidentMemoryService] = None,
     ) -> None:
         self._investigation_repository = investigation_repository
         self._incident_service = incident_service
@@ -49,6 +51,7 @@ class InvestigationService:
         self._llm = llm
         self._git_limit = git_limit
         self._max_revisions = max_revisions
+        self._memory_service = memory_service
 
     def investigate(self, incident_id: str) -> Investigation:
         """Runs the LangGraph investigation workflow for an existing incident.
@@ -91,6 +94,7 @@ class InvestigationService:
             git_service=self._git_service,
             git_limit=self._git_limit,
             max_revisions=self._max_revisions,
+            memory_service=self._memory_service,
         )
 
         initial_state: InvestigationState = {
@@ -102,6 +106,7 @@ class InvestigationService:
             "code_analysis": None,
             "git_context": [],
             "change_analysis": None,
+            "historical_context": [],
             "rca": None,
             "validation": None,
             "revision_count": 0,
@@ -148,14 +153,31 @@ class InvestigationService:
             code_analysis=final_state.get("code_analysis"),
             git_context=final_state.get("git_context", []),
             change_analysis=final_state.get("change_analysis"),
+            historical_context=final_state.get("historical_context", []),
             rca=rca,
             validation=final_state.get("validation"),
             errors=errors,
         )
 
-        # Step 5: Save and return
+        # Step 5: Save to investigation repository
         self._investigation_repository.save(investigation)
         logger.info("Investigation %s finished with status %s", investigation_id, status.value)
+
+        # Step 6: Conditionally ingest into historical incident memory
+        # Ingestion requires: status == COMPLETED, rca != None, validation != None, validation.valid == True
+        if (
+            status == InvestigationStatus.COMPLETED
+            and rca is not None
+            and validation is not None
+            and validation.valid is True
+            and self._memory_service is not None
+        ):
+            try:
+                self._memory_service.ingest_investigation(investigation, incident)
+                logger.info("Auto-ingested completed investigation %s into historical memory.", investigation_id)
+            except Exception as exc:
+                logger.warning("Failed to auto-ingest investigation %s into memory: %s", investigation_id, exc)
+
         return investigation
 
     def get_investigation(self, incident_id: str) -> Investigation:

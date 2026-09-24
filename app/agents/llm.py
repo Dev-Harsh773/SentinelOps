@@ -36,6 +36,7 @@ from app.agents.grounding import (
     reconcile_semantic_validation_findings,
     run_deterministic_grounding_check,
 )
+from app.memory.models import HistoricalIncidentContext
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class InvestigationLLM(Protocol):
         evidence: List[Evidence],
         code_chunks: List[Dict[str, Any]],
         git_context: List[Dict[str, Any]],
+        historical_context: Optional[List[HistoricalIncidentContext]] = None,
     ) -> RootCauseAnalysis:
         ...
 
@@ -108,6 +110,7 @@ class InvestigationLLM(Protocol):
         evidence: List[Evidence],
         code_chunks: List[Dict[str, Any]],
         git_context: List[Dict[str, Any]],
+        historical_context: Optional[List[HistoricalIncidentContext]] = None,
     ) -> RootCauseAnalysis:
         ...
 
@@ -278,6 +281,7 @@ class FakeInvestigationLLM:
         evidence: List[Evidence],
         code_chunks: List[Dict[str, Any]],
         git_context: List[Dict[str, Any]],
+        historical_context: Optional[List[HistoricalIncidentContext]] = None,
     ) -> RootCauseAnalysis:
         if self.raise_error:
             raise InvestigationLLMError(self.error_message)
@@ -434,6 +438,7 @@ class FakeInvestigationLLM:
         evidence: List[Evidence],
         code_chunks: List[Dict[str, Any]],
         git_context: List[Dict[str, Any]],
+        historical_context: Optional[List[HistoricalIncidentContext]] = None,
     ) -> RootCauseAnalysis:
         if self.raise_error:
             raise InvestigationLLMError(self.error_message)
@@ -758,6 +763,7 @@ class LangChainInvestigationLLM:
         evidence: List[Evidence],
         code_chunks: List[Dict[str, Any]],
         git_context: List[Dict[str, Any]],
+        historical_context: Optional[List[HistoricalIncidentContext]] = None,
     ) -> RootCauseAnalysis:
         if not runtime_analysis or not code_analysis:
             logger.error(
@@ -788,10 +794,24 @@ class LangChainInvestigationLLM:
                     git_context_lines.append(f"- Commit {chash} in {gc.get('file_path')}: '{cm.get('message')}'")
             git_text = "\n".join(git_context_lines) if git_context_lines else "No Git commits available."
 
+            hist_lines = []
+            if historical_context:
+                for hc in historical_context:
+                    hist_lines.append(
+                        f"- Historical Incident {hc.incident_id} ('{hc.title}') [Similarity Score: {hc.similarity_score}]:\n"
+                        f"  Service: {hc.service}\n"
+                        f"  Failure Location: {hc.failure_location}\n"
+                        f"  Triggering Condition: {hc.triggering_condition}\n"
+                        f"  Root Cause Hypothesis: {hc.root_cause_hypothesis}\n"
+                        f"  Matched Signals: {', '.join(hc.matched_signals)}"
+                    )
+            hist_text = "\n".join(hist_lines) if hist_lines else "No similar historical incidents found."
+
             prompt = (
                 f"{RCA_SYNTHESIS_SYSTEM_PROMPT}\n\n"
                 f"Incident Title: {incident.title}\n"
                 f"Incident Summary: {incident.summary} (Severity: {incident.severity.value})\n\n"
+                f"Historical Similar Incidents (Advisory / Prior Knowledge Only - DO NOT cite as current evidence):\n{hist_text}\n\n"
                 f"Runtime Analysis Facts:\n{runtime_analysis}\n\n"
                 f"Raw Runtime Evidence Logs:\n{evidence_context}\n\n"
                 f"Code Analysis Facts:\n{code_analysis}\n\n"
@@ -929,6 +949,7 @@ class LangChainInvestigationLLM:
         evidence: List[Evidence],
         code_chunks: List[Dict[str, Any]],
         git_context: List[Dict[str, Any]],
+        historical_context: Optional[List[HistoricalIncidentContext]] = None,
     ) -> RootCauseAnalysis:
         try:
             structured_model = self._llm.with_structured_output(RootCauseAnalysisSchema)

@@ -592,9 +592,73 @@ Thread-safe clearing ensures test independence, interface conformity ensures rel
 - Synchronous graph execution; asynchronous task queues (Celery/Redis) are intentionally avoided in Stage 6 to keep the MVP lightweight and testable.
 
 ### Real-provider verification
-Pending (manual verification with OpenAI provider)
+Completed and verified with real OpenAI provider in Stage 6.
+
+### User Approval
+Approved
+
+---
+
+## Stage 7 — Incident Memory and Historical RAG
+
+### Objective
+Implement deterministic incident memory persistence and historical retrieval (RAG) for SentinelOps without external vector databases or remote embedding APIs. Persist trusted root cause analyses from validated completed investigations, deterministically retrieve prior similar incidents using combined exact categorical scoring and weighted Jaccard lexical overlap, inject historical context strictly as advisory prior knowledge before RCA synthesis, and preserve strict provenance isolation between historical incident records and current incident evidence citations.
+
+### Design Decision
+- **Lightweight Deterministic Architecture**: Chose in-memory repository and deterministic scoring over heavy vector databases (ChromaDB/Pinecone) or embedding APIs to keep the platform fast, testable, and dependency-light.
+- **Strict Ingestion Gate**: Only investigations satisfying `status == COMPLETED`, `rca != None`, `validation != None`, and `validation.valid == True` are eligible for memory ingestion. Failed, intermediate, or ungrounded investigations are never persisted.
+- **Single Trusted Record per Incident**: Memory is keyed by `incident_id`. A subsequent valid investigation on the same incident updates the existing memory in-place (preserving original `created_at`), while subsequent failed or invalid investigations never overwrite an existing trusted memory.
+- **Non-Circular Historical Query**: Constructed `HistoricalSearchQuery` strictly before RCA synthesis from current incident metadata, runtime analysis facts (`service`, `endpoint`, `exception_type`, log messages), and code analysis facts (`relevant_symbols`, `relevant_files`). It contains zero dependency on the current incident's RCA.
+- **Deterministic Multi-Signal Scoring**:
+  - Self-exclusion: candidate matching `current_incident_id` is immediately excluded.
+  - Categorical scoring: `service` match (+3.0), `exception_type` match (+4.0), `endpoint` match (+2.0), `failure_location` / symbol match in `relevant_symbols` (+5.0).
+  - Lexical scoring: Jaccard token overlap between query text and candidate text multiplied by 3.0.
+  - Relevance filtering: threshold `>= 3.0`.
+  - Deterministic ranking: descending score with candidate `incident_id` ascending tie-breaker, limited to top 2 results by default.
+- **LangGraph Integration**: Inserted `retrieve_historical_context` node between `analyze_changes` and `synthesize_rca`. If memory search fails or is unconfigured, the graph gracefully records a non-fatal warning in `state["errors"]`, sets `historical_context = []`, and synthesis proceeds without crashing.
+- **Strict Provenance Isolation**: Historical incidents provide advisory prior knowledge. Current runtime logs, code chunks, and Git facts remain strictly authoritative. `supporting_evidence` in synthesized and revised RCAs is restricted to current incident evidence IDs, code chunk IDs, or Git commit hashes.
+- **Minimal Inspection APIs**: Exposed `GET /memory`, `GET /memory/{incident_id}`, and `POST /memory/search`, and included `historical_context` in `InvestigationResponse`.
+
+### Files Added / Changed
+- `app/memory/models.py`: Domain dataclasses (`IncidentMemory`, `HistoricalSearchQuery`, `HistoricalIncidentContext`) and Pydantic schemas (`IncidentMemoryResponseSchema`, `HistoricalIncidentContextSchema`, `MemorySearchRequestSchema`, `MemorySearchResponseSchema`).
+- `app/memory/repository.py`: Interface `IncidentMemoryRepository` and thread-safe `InMemoryIncidentMemoryRepository`.
+- `app/memory/matcher.py`: Deterministic scoring and ranking engine (`IncidentMemoryMatcher`).
+- `app/memory/service.py`: Orchestrator `IncidentMemoryService` implementing conditional ingestion and historical search.
+- `app/memory/dependencies.py`: Dependency injection providers and repository reset helpers.
+- `app/memory/routes.py`: FastAPI endpoints for `GET /memory`, `GET /memory/{incident_id}`, and `POST /memory/search`.
+- `app/memory/__init__.py`: Package export interface.
+- `app/workflows/investigation_state.py`: Added `historical_context` field to `InvestigationState`.
+- `app/workflows/investigation_graph.py`: Added `retrieve_historical_context_node`, wired between `analyze_changes` and `synthesize_rca`, and passed historical context to synthesis and revision.
+- `app/agents/models.py`: Added `historical_context` to `Investigation` entity.
+- `app/agents/schemas.py`: Added `historical_context` to `InvestigationResponse` schema.
+- `app/agents/service.py`: Injected `IncidentMemoryService`, passed it to graph compilation, populated `historical_context`, and auto-ingested eligible completed investigations.
+- `app/agents/dependencies.py`: Injected `get_memory_service()` into `get_investigation_service()`.
+- `app/agents/llm.py`: Updated `InvestigationLLM` protocol, `FakeInvestigationLLM`, and `LangChainInvestigationLLM` `synthesize_rca` and `revise_rca` signatures and prompt formatting to include advisory historical context.
+- `app/agents/prompts.py`: Added historical context and provenance isolation rules to `RCA_SYNTHESIS_SYSTEM_PROMPT`.
+- `app/agents/routes.py`: Mapped `historical_context` in `_to_response`.
+- `app/api/__init__.py`: Registered `memory_router` in application router.
+- `tests/test_memory.py`: 14 comprehensive unit and integration tests covering eligibility, idempotency, scoring, noise filtering, graph execution, failure resilience, and APIs.
+
+### Problems Encountered
+- **Problem 1 (Circular Import)**: Importing `HistoricalIncidentContext` into `app/agents/models.py` while `app/memory/service.py` imported `InvestigationStatus` from `app.agents.models` triggered a circular import exception during test discovery.
+  - *Solution*: Removed the top-level `InvestigationStatus` import in `app/memory/service.py` and evaluated the normalized lowercase status value against string literal `"completed"`.
+- **Problem 2 (Missing Test Client Fixture & Telemetry Setup)**: Initial pytest run in `tests/test_memory.py` failed due to missing `client` fixture and attempted POST to non-existent `/incidents/{id}/evidence` instead of the repository creation pattern used in SentinelOps tests.
+  - *Solution*: Added the `client` fixture and an `attach_evidence` helper directly utilizing `get_evidence_repository().create(...)`.
+
+### Verification
+- Executed `pytest tests/test_memory.py`: all 14 Stage 7 unit and integration tests passed in 1.03s.
+- Executed `pytest tests/test_investigation.py`: all 66 investigation tests passed in 15.25s.
+- Executed full project test suite `pytest`: all 145 tests passed in 37.43s with 100% pass rate and zero regressions.
+- Verified deterministic noise filtering: candidate sharing only service name is ranked below candidate sharing service + exception + failure location symbol.
+- Verified provenance isolation: historical incident IDs never leak into RCA `supporting_evidence`.
+- Verified fail-safe execution: graph proceeds and completes even if historical memory search raises an unexpected exception.
+
+### Known Limitations
+- Lexical matching operates on token overlap without phonetic stemming or embedding similarity (kept lightweight by design).
+- In-memory storage persists during process lifetime and is reset across restarts.
 
 ### User Approval
 Pending
+
 
 

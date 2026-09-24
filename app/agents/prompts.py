@@ -84,6 +84,10 @@ CRITICAL RULES:
    - Strong confidence requires: runtime evidence + code + directly matching branch/triggering condition.
    - Do NOT artificially boost confidence simply because a baseline Git commit was retrieved.
 6. Explicitly list uncertainties and unverified assumptions, including: "The available evidence does not establish how or when the failure condition became true."
+7. HISTORICAL CONTEXT & PROVENANCE ISOLATION:
+   - Historical incident context represents past incidents and is strictly advisory background.
+   - Current runtime evidence and retrieved code chunks remain strictly authoritative.
+   - NEVER cite historical incident IDs or past evidence IDs in supporting_evidence. supporting_evidence MUST cite ONLY concrete evidence from the current incident.
 """
 
 RCA_VALIDATION_SYSTEM_PROMPT = """You are an adversarial reliability auditor validating an AI-generated Root Cause Analysis.

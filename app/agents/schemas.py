@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+from app.memory.models import HistoricalIncidentContextSchema
+
 
 class EvidenceReferenceSchema(BaseModel):
     """Schema for referencing concrete supporting or contradicting evidence."""
@@ -120,6 +122,7 @@ class InvestigationResponse(BaseModel):
     code_analysis: Optional[CodeAnalysisSchema] = None
     git_context: List[Dict[str, Any]] = Field(default_factory=list)
     change_analysis: Optional[ChangeAnalysisSchema] = None
+    historical_context: List[HistoricalIncidentContextSchema] = Field(default_factory=list)
     rca: Optional[RootCauseAnalysisSchema] = None
     validation: Optional[RCAValidationSchema] = None
     errors: List[str] = Field(default_factory=list)

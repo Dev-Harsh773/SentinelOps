@@ -11,6 +11,7 @@ from app.agents.models import (
     RuntimeAnalysis,
 )
 from app.incidents.models import Incident
+from app.memory.models import HistoricalIncidentContext
 from app.telemetry.models import Evidence
 
 
@@ -25,6 +26,7 @@ class InvestigationState(TypedDict, total=False):
     code_analysis: Optional[CodeAnalysis]
     git_context: List[Dict[str, Any]]
     change_analysis: Optional[ChangeAnalysis]
+    historical_context: List[HistoricalIncidentContext]
     rca: Optional[RootCauseAnalysis]
     validation: Optional[RCAValidation]
     revision_count: int

@@ -21,6 +21,7 @@ from app.agents.schemas import (
 )
 from app.agents.service import InvestigationService
 from app.incidents.service import IncidentNotFoundError
+from app.memory.models import HistoricalIncidentContextSchema
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,21 @@ def _to_response(inv: Investigation) -> InvestigationResponse:
             missing_evidence=val.missing_evidence,
         )
 
+    hist_schemas = [
+        HistoricalIncidentContextSchema(
+            incident_id=h.incident_id,
+            title=h.title,
+            service=h.service,
+            failure_location=h.failure_location,
+            triggering_condition=h.triggering_condition,
+            root_cause_hypothesis=h.root_cause_hypothesis,
+            similarity_score=h.similarity_score,
+            matched_signals=h.matched_signals,
+            resolution_notes=h.resolution_notes,
+        )
+        for h in getattr(inv, "historical_context", [])
+    ]
+
     return InvestigationResponse(
         investigation_id=inv.investigation_id,
         incident_id=inv.incident_id,
@@ -111,6 +127,7 @@ def _to_response(inv: Investigation) -> InvestigationResponse:
         code_analysis=ca_schema,
         git_context=inv.git_context,
         change_analysis=cha_schema,
+        historical_context=hist_schemas,
         rca=rca_schema,
         validation=val_schema,
         errors=inv.errors,

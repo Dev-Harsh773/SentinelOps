@@ -15,6 +15,8 @@ from app.agents.service import InvestigationService
 from app.common.config import config
 from app.incidents.dependencies import get_incident_service
 from app.incidents.service import IncidentService
+from app.memory.dependencies import get_memory_service
+from app.memory.service import IncidentMemoryService
 from app.repository.dependencies import get_git_service
 from app.repository.service import GitService
 from app.retrieval.dependencies import get_retrieval_service
@@ -57,6 +59,7 @@ def get_investigation_service(
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
     git_service: GitService = Depends(get_git_service),
     llm: InvestigationLLM = Depends(get_investigation_llm),
+    memory_service: IncidentMemoryService = Depends(get_memory_service),
 ) -> InvestigationService:
     """Provides a fully wired InvestigationService."""
     return InvestigationService(
@@ -68,4 +71,5 @@ def get_investigation_service(
         llm=llm,
         git_limit=config.git_context_limit,
         max_revisions=config.rca_max_revisions,
+        memory_service=memory_service,
     )
