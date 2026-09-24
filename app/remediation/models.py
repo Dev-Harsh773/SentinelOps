@@ -31,9 +31,35 @@ class RemediationIneligibleError(Exception):
         self.reason = reason
 
 
+class RemediationReviewError(Exception):
+    """Raised when a remediation review operation is invalid."""
+
+    def __init__(self, incident_id: str, reason: str):
+        super().__init__(f"Invalid review for incident '{incident_id}': {reason}")
+        self.incident_id = incident_id
+        self.reason = reason
+
+
+class RemediationBranchError(Exception):
+    """Raised when a remediation branch operation is invalid."""
+
+    def __init__(self, incident_id: str, reason: str):
+        super().__init__(f"Branch creation failed for incident '{incident_id}': {reason}")
+        self.incident_id = incident_id
+        self.reason = reason
+
+
 # =====================================================================
 # Domain Enums & Dataclasses
 # =====================================================================
+
+
+class ReviewDecision(str, Enum):
+    """Explicit human decision on a remediation proposal."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    REVISION_REQUESTED = "revision_requested"
 
 
 class RemediationStatus(str, Enum):
@@ -42,6 +68,9 @@ class RemediationStatus(str, Enum):
     DRAFT = "draft"
     VALIDATED = "validated"
     FAILED_VALIDATION = "failed_validation"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    REVISION_REQUESTED = "revision_requested"
 
 
 class ChangeType(str, Enum):
@@ -153,3 +182,66 @@ class RemediationProposalResponseSchema(BaseModel):
     confidence: float
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass
+class RemediationReview:
+    """Immutable audit record of a human review decision."""
+
+    review_id: str
+    incident_id: str
+    remediation_id: str
+    investigation_id: str
+    decision: ReviewDecision
+    reviewer: str
+    comment: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class RemediationBranch:
+    """Record of an isolated Git branch created for an approved remediation."""
+
+    branch_id: str
+    incident_id: str
+    remediation_id: str
+    approval_id: str
+    branch_name: str
+    base_branch: str
+    base_commit: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RemediationReviewCreateSchema(BaseModel):
+    """API payload for submitting a human review decision on a remediation."""
+
+    decision: ReviewDecision = Field(description="Review decision: approved, rejected, or revision_requested")
+    reviewer: str = Field(min_length=1, max_length=100, description="Identifier of the human reviewer")
+    comment: str = Field(min_length=1, max_length=2000, description="Review rationale or revision guidance")
+
+
+class RemediationReviewResponseSchema(BaseModel):
+    """API representation of a persisted remediation review record."""
+
+    review_id: str
+    incident_id: str
+    remediation_id: str
+    investigation_id: str
+    decision: ReviewDecision
+    reviewer: str
+    comment: str
+    created_at: datetime
+
+
+class RemediationBranchResponseSchema(BaseModel):
+    """API representation of an isolated remediation branch."""
+
+    branch_id: str
+    incident_id: str
+    remediation_id: str
+    approval_id: str
+    branch_name: str
+    base_branch: str
+    base_commit: str
+    created_at: datetime
+

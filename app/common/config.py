@@ -28,6 +28,8 @@ class AppConfig:
     demo_app_log_path: str
     source_repository_path: str
     git_repository_path: str
+    git_branch_repository_path: str
+    git_base_branch: str
     llm_provider: str
     llm_model: str
     openai_api_key: Optional[str]
@@ -38,6 +40,10 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         # Read from environment with sensible local development defaults
         # so the application can run out-of-the-box without requiring a .env file.
+        git_repo_path = os.getenv("GIT_REPOSITORY_PATH", ".")
+        git_branch_repo_path = os.getenv("GIT_BRANCH_REPOSITORY_PATH") or git_repo_path
+        git_base_branch = os.getenv("GIT_BASE_BRANCH", "main")
+
         return cls(
             app_name=os.getenv("APP_NAME", "sentinelops"),
             app_env=os.getenv("APP_ENV", "development"),
@@ -46,7 +52,9 @@ class AppConfig:
             port=int(os.getenv("PORT", "8000")),
             demo_app_log_path=os.getenv("DEMO_APP_LOG_PATH", "runtime/demo_app.jsonl"),
             source_repository_path=os.getenv("SOURCE_REPOSITORY_PATH", "demo_app"),
-            git_repository_path=os.getenv("GIT_REPOSITORY_PATH", "."),
+            git_repository_path=git_repo_path,
+            git_branch_repository_path=git_branch_repo_path,
+            git_base_branch=git_base_branch,
             llm_provider=os.getenv("LLM_PROVIDER", "mock").lower(),
             llm_model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,

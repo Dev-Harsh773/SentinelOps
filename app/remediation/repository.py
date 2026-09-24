@@ -31,6 +31,11 @@ class RemediationRepository(ABC):
         ...
 
     @abstractmethod
+    def list_for_incident(self, incident_id: str) -> List[RemediationProposal]:
+        """List all proposals (including historical) for an incident, newest first."""
+        ...
+
+    @abstractmethod
     def delete_by_incident_id(self, incident_id: str) -> bool:
         """Delete remediation proposal for an incident if present."""
         ...
@@ -46,11 +51,8 @@ class InMemoryRemediationRepository(RemediationRepository):
 
     def save(self, proposal: RemediationProposal) -> RemediationProposal:
         with self._lock:
-            # If replacing an existing proposal for the incident with a new remediation_id, remove old
-            old_rem_id = self._incident_index.get(proposal.incident_id)
-            if old_rem_id and old_rem_id != proposal.remediation_id:
-                self._storage.pop(old_rem_id, None)
-
+            # Retain historical proposals in _storage keyed by remediation_id,
+            # while indexing the incident to point to the latest active proposal.
             self._storage[proposal.remediation_id] = proposal
             self._incident_index[proposal.incident_id] = proposal.remediation_id
             return proposal
@@ -69,6 +71,11 @@ class InMemoryRemediationRepository(RemediationRepository):
     def list_all(self) -> List[RemediationProposal]:
         with self._lock:
             return list(self._storage.values())
+
+    def list_for_incident(self, incident_id: str) -> List[RemediationProposal]:
+        with self._lock:
+            proposals = [p for p in self._storage.values() if p.incident_id == incident_id]
+            return sorted(proposals, key=lambda p: p.created_at, reverse=True)
 
     def delete_by_incident_id(self, incident_id: str) -> bool:
         with self._lock:

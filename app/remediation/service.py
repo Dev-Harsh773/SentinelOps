@@ -114,13 +114,20 @@ class RemediationService:
 
         # Step 4: Check existing proposal for idempotency vs re-investigation refresh
         existing = self._repository.get_by_incident_id(incident_id)
-        if existing and existing.investigation_id == investigation.investigation_id and not regenerate:
-            logger.info(
-                "Returning existing remediation proposal '%s' idempotently for incident '%s'",
-                existing.remediation_id,
-                incident_id,
-            )
-            return existing
+        if existing and existing.investigation_id == investigation.investigation_id:
+            if not regenerate:
+                logger.info(
+                    "Returning existing remediation proposal '%s' idempotently for incident '%s'",
+                    existing.remediation_id,
+                    incident_id,
+                )
+                return existing
+
+            if existing.status == RemediationStatus.APPROVED:
+                raise RemediationIneligibleError(
+                    incident_id,
+                    "Remediation proposal is already approved; regeneration is refused to prevent replacing an authorized proposal under active remediation.",
+                )
 
         # Step 5: Gather current investigation evidence and context
         runtime_evidence = self._evidence_repository.list_for_incident(incident_id)
@@ -191,13 +198,19 @@ class RemediationService:
 
         # Step 8: Handle timestamps and ID according to idempotency / re-investigation rules
         now = datetime.now(timezone.utc)
-        if existing and existing.investigation_id == investigation.investigation_id and regenerate:
-            # Same investigation refreshed in place: preserve ID and created_at, update updated_at
+        if (
+            existing
+            and existing.investigation_id == investigation.investigation_id
+            and regenerate
+            and existing.status == RemediationStatus.VALIDATED
+        ):
+            # Same investigation refreshed in place while still in VALIDATED status: preserve ID and created_at
             proposal.remediation_id = existing.remediation_id
             proposal.created_at = existing.created_at
             proposal.updated_at = now
         else:
-            # Newer investigation or new incident proposal: new ID and new timestamps
+            # Newer investigation, new proposal, or regeneration after REJECTED / REVISION_REQUESTED:
+            # create a brand-new proposal with new remediation_id and new timestamps
             proposal.remediation_id = str(uuid.uuid4())
             proposal.created_at = now
             proposal.updated_at = now

@@ -734,4 +734,104 @@ Implement an AI-assisted, strictly proposal-only remediation system that transfo
 - In-memory proposal storage: Proposals persist during server process runtime.
 
 ### User Approval
-Pending
+Approved
+
+---
+
+## Stage 9 — Human Approval and Isolated Git Branch
+
+### Objective
+Establish a secure, auditable human-in-the-loop review approval gate and isolated Git branch creation mechanism before any proposed remediation moves toward code mutation. Ensure that:
+- Human reviewers can approve, reject, or request revisions on validated remediation proposals.
+- Terminal rejection and revision-requested states enforce regeneration semantics, while preserving historical audit trails.
+- Git branch management operates on an isolated repository path (`GIT_BRANCH_REPOSITORY_PATH`) rooted strictly at the trusted base branch (`GIT_BASE_BRANCH`), leaving read-only Git intelligence (`GIT_REPOSITORY_PATH`) unaffected.
+- Git operations enforce complete working-tree safety, zero code mutation, idempotent branch creation without redundant checkout side effects, and exact duplicate review idempotency.
+
+### Design Decisions
+- **Human Review Lifecycle & Invariants**:
+  - Reviews support three decisions: `APPROVED`, `REJECTED`, and `REVISION_REQUESTED`.
+  - Proposals in `DRAFT` or `FAILED_VALIDATION` status cannot be reviewed.
+  - Proposals with stale investigations cannot be reviewed.
+  - `REJECTED` is terminal for approval/branching; a rejected proposal cannot later be approved directly. To continue, an operator must regenerate the remediation proposal.
+  - `REVISION_REQUESTED` blocks branching and cannot be approved directly without first regenerating the proposal.
+  - `APPROVED` proposals lock approval; once branched, approval decisions cannot be altered. Regenerating an `APPROVED` proposal is strictly refused with HTTP 409 Conflict.
+- **Review Idempotency Ordering**:
+  - In `RemediationReviewService.submit_review`, exact duplicate submissions (`decision`, `clean_reviewer`, `clean_comment`) are verified and returned idempotently *before* applying lifecycle transition restrictions. This ensures that repeating an approval submission does not produce spurious 409 conflicts or create duplicate audit entries.
+- **Regeneration Lifecycle Semantics**:
+  - `VALIDATED` + `regenerate=true`: In-place proposal refresh, retaining the existing `remediation_id` and `created_at`.
+  - `REJECTED` / `REVISION_REQUESTED` + `regenerate=true`: Generates a brand-new proposal with a new `remediation_id`, fresh timestamps, and status reset to `VALIDATED`.
+  - Historical proposals are preserved in `RemediationRepository._storage` by `remediation_id`, ensuring past proposals and their review histories remain fully auditable across regenerations.
+- **Dual Git Repository Configuration**:
+  - Separated `GIT_REPOSITORY_PATH` (used by Stage 5 read-only Git intelligence) from `GIT_BRANCH_REPOSITORY_PATH` (used only by Stage 9 `GitBranchManager`).
+  - Added `GIT_BASE_BRANCH` (default `"main"`), defining the trusted base branch required for remediation branching.
+- **Git Branch Safety & Branch Manager**:
+  - `GitBranchManager` strictly enforces subprocess invocation with `shell=False` and a 10s timeout.
+  - Enforces that the repository's active branch equals `GIT_BASE_BRANCH` before allowing branching.
+  - Checks tracked working tree cleanliness (`git diff --name-only` and `git diff --cached --name-only`). If uncommitted modifications exist in tracked files, branch creation is refused with HTTP 409 Conflict to protect user work from being stashed, overwritten, or lost.
+  - Generates deterministic, sanitized branch names: `sentinel/incident-<incident_id>-fix`, bounded to 100 characters.
+  - Pins the branch strictly to the exact HEAD SHA of the configured base branch (`git checkout -b <branch_name> <base_commit>`).
+  - Implements branch idempotency without checkout side effects: if a branch already exists for the proposal, the existing `RemediationBranch` entity is returned without re-executing `git checkout`.
+  - Performs zero source file modifications, zero patch applications, and zero commits or merges.
+
+### Files Added / Changed
+- `app/common/config.py`: Added `git_branch_repository_path` and `git_base_branch` configuration fields.
+- `app/remediation/models.py`: Added `ReviewDecision` enum, extended `RemediationStatus` with `APPROVED`, `REJECTED`, `REVISION_REQUESTED`, added dataclasses `RemediationReview` and `RemediationBranch`, exceptions `RemediationReviewError` and `RemediationBranchError`, and Pydantic request/response schemas.
+- `app/remediation/repository.py`: Updated `InMemoryRemediationRepository` to retain historical proposals in `_storage` by `remediation_id` and added `list_for_incident(incident_id)`.
+- `app/remediation/service.py`: Enforced Stage 9 regeneration rules (refusing approved regeneration with 409; issuing new `remediation_id` for rejected/revision-requested).
+- `app/repository/branch_manager.py`: Implemented `GitBranchManager` for branch creation, clean tree checking, and HEAD commit resolution.
+- `app/remediation/review_repository.py`: Interface and in-memory repository for chronological review audit trails.
+- `app/remediation/branch_repository.py`: Interface and in-memory repository for branch metadata.
+- `app/remediation/review_service.py`: Orchestrator `RemediationReviewService` implementing review lifecycle, idempotency ordering, and safe Git branch creation.
+- `app/remediation/dependencies.py`: Registered providers `get_review_repository`, `get_branch_repository`, `get_git_branch_manager`, `get_review_service`, and test isolation resetters.
+- `app/remediation/routes.py`: Added endpoints `POST /incidents/{incident_id}/remediation/reviews`, `GET /incidents/{incident_id}/remediation/reviews`, `POST /incidents/{incident_id}/remediation/branch`, and `GET /incidents/{incident_id}/remediation/branch`.
+- `app/remediation/__init__.py`: Exported Stage 9 public symbols.
+- `tests/test_remediation_approval.py`: Comprehensive test suite with 30 tests covering all review lifecycle rules, regeneration preservation, base branch validation, clean working-tree protection, idempotency, and zero-mutation guarantees.
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 8 approval and added Stage 9 implementation journal entry.
+
+### Problems Encountered
+- **Problem 1 (Review Idempotency Ordering vs. Terminal Lifecycle Checks)**: An engineer resubmitting an identical approval review (same decision, reviewer, and comment) could have triggered the `proposal.status == RemediationStatus.APPROVED` conflict check, resulting in a spurious 409 Conflict.
+  - *Solution*: Reordered review validation in `RemediationReviewService.submit_review` so the exact duplicate check runs *before* lifecycle checks (`APPROVED`, `REJECTED`, `REVISION_REQUESTED`). Duplicate submissions return the existing review immediately without creating redundant audit records.
+- **Problem 2 (Historical Audit Trail Preservation during Regeneration)**: In Stage 8, `InMemoryRemediationRepository.save` cleaned up prior proposals with `_storage.pop(old_rem_id, None)`. When an operator regenerated a proposal after rejection or revision request, the prior proposal and its review history would become unretrievable.
+  - *Solution*: Updated `save` to index the active proposal per incident via `_incident_index[incident_id] = proposal.remediation_id` while retaining all proposals in `_storage[remediation_id]`. Added `list_for_incident` to retrieve complete proposal history ordered chronologically.
+- **Problem 3 (Git Repository Configuration Contamination)**: Reusing `GIT_REPOSITORY_PATH` for manual branch verification would have redirected Stage 5 Git intelligence away from `demo_app`, distorting commit context during investigations.
+  - *Solution*: Introduced `GIT_BRANCH_REPOSITORY_PATH` specifically for `GitBranchManager`, falling back to `GIT_REPOSITORY_PATH` by default, cleanly separating read-only Git intelligence from branch mutation targets.
+
+### Verification
+- Executed `pytest tests/test_remediation_approval.py`: all 30 Stage 9 tests passed in 12.04s.
+- Executed full project test suite `pytest`: all 195 tests passed in 1m 16s with 100% success and zero regressions across Stages 0 through 9.
+- Verified review decisions: `approved` enables branch creation; `rejected` and `revision_requested` block branch creation with 409 Conflict.
+- Verified terminal rejection: `REJECTED` proposal cannot transition to `APPROVED` without regeneration.
+- Verified regeneration: `VALIDATED` preserves `remediation_id`; `REJECTED`/`REVISION_REQUESTED` generates fresh `remediation_id`; `APPROVED` regeneration is refused with 409.
+- Verified base branch verification: branch creation is refused with 409 if current branch is not `GIT_BASE_BRANCH`.
+- Verified working-tree safety: uncommitted tracked changes block branch creation with 409 without discarding, modifying, or stashing user changes.
+- Verified zero mutation: branch creation performs zero file edits, zero patch applications, and zero commits.
+- Verified branch idempotency: repeated POST /branch returns existing branch record without re-executing `git checkout`.
+- **Manual Verification (Live End-to-End Testing)**:
+  - Real incident evidence collected from live demo application failure.
+  - Completed and valid investigation successfully generated.
+  - Validated initial remediation Proposal A.
+  - Verified branch creation was blocked before review approval.
+  - Submitted Proposal A rejection review.
+  - Verified rejected Proposal A could not later be approved (409 Conflict).
+  - Verified rejected Proposal A could not create a branch (409 Conflict).
+  - Regenerated proposal, producing Proposal B with a brand-new `remediation_id`.
+  - Verified historical Proposal A and its review history remained available in audit trail.
+  - Verified Proposal B did not inherit Proposal A authorization.
+  - Submitted fresh review approving Proposal B.
+  - Verified identical repeated approval was idempotent and returned the same `review_id`.
+  - Verified review audit history contained exactly two genuine records (rejection for Proposal A, approval for Proposal B).
+  - Approved Proposal B successfully created isolated branch `sentinel/incident-<id>-fix`.
+  - Verified branch used configured base branch `main`.
+  - Verified stored `base_commit` matched `main` HEAD commit SHA.
+  - Verified branch creation modified zero files.
+  - Verified branch creation created no new Git commit.
+  - Repeated branch POST returned the existing branch record idempotently.
+  - Repeated branch POST caused no checkout side effect after scratch repository was manually returned to `main`.
+  - Confirmed the real SentinelOps repository remained safely on `main`.
+
+### Known Limitations
+- Branch creation switches to the isolated branch but does not generate or apply code diffs/patches (deferred to Stage 10 Automated Patch Application and Verification).
+- In-memory persistence for reviews and branch records during server process runtime.
+
+### User Approval
+Approved
