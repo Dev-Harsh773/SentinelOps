@@ -658,7 +658,80 @@ Implement deterministic incident memory persistence and historical retrieval (RA
 - In-memory storage persists during process lifetime and is reset across restarts.
 
 ### User Approval
+Approved
+
+---
+
+## Stage 8 — Remediation Proposal
+
+### Objective
+Implement an AI-assisted, strictly proposal-only remediation system that transforms validated Root Cause Analyses (RCAs) into concrete, actionable, grounded fix proposals. Ensure absolute non-mutation safety (zero writes to source files, zero patch applications, zero git branch creations, commits, or checkouts). Enforce strong file and symbol grounding against the current investigation's retrieved code artifacts, strict evidence provenance isolation, deterministic validation with bounded 1-pass revision, and robust idempotency across re-investigations.
+
+### Design Decisions
+- **Proposal-Only Safety Invariant**: The remediation engine acts purely in advisory mode. Production code contains no file writes, patch applications, git checkouts, branch creations, commits, merges, or execution. Automated regression tests verify repository git state invariance before and after proposal generation, while tolerating pre-existing dirty working tree changes.
+- **Strict Eligibility Gate**: Proposals can only be requested if:
+  - The incident exists.
+  - An investigation exists.
+  - `investigation.status == InvestigationStatus.COMPLETED`.
+  - `investigation.rca != None`.
+  - `investigation.validation != None` and `investigation.validation.valid == True`.
+  Requests for uninvestigated or non-existent incidents return HTTP 404. Requests for failed or unvalidated investigations return HTTP 409 Conflict with explanatory error details.
+- **Strong Target Grounding**:
+  - `target_files` must be grounded in the current investigation's `code_results` or `code_analysis.relevant_files`. Real files existing elsewhere in the repo that were not retrieved for the current investigation are strictly rejected.
+  - `target_symbols` (when specified) must be grounded in the retrieved code chunks or `code_analysis.relevant_symbols`. Symbols are optional for file-level or configuration changes.
+- **Evidence Provenance Isolation**:
+  - `evidence_references` must cite only current investigation evidence (runtime log IDs, code chunk IDs, commit hashes).
+  - Historical incident IDs from advisory memory context (e.g. `inc-past-123`) are forbidden from masquerading as current grounding evidence.
+- **Deterministic Validation & Bounded 1-Pass Revision**:
+  - `RemediationValidator` deterministically validates target files, symbols, evidence citations, rationale, risks, and validation steps.
+  - If initial generation fails validation, the service performs exactly one revision pass with structured feedback.
+  - If validation fails again after revision, the proposal is stored with `status = RemediationStatus.FAILED_VALIDATION`, with full validation details persisted and API-visible.
+- **Idempotency & Re-Investigation Lifecycle**:
+  - Same `investigation_id` with `regenerate=False`: returns the existing proposal idempotently without invoking the LLM.
+  - Same `investigation_id` with `regenerate=True`: regenerates proposal in-place, preserving `remediation_id` and `created_at` while updating `updated_at`.
+  - Newer `investigation_id`: automatically generates a fresh proposal with a new `remediation_id` and timestamps, replacing the active proposal for the incident.
+- **Provider Architecture**:
+  - `RemediationLLM` protocol with `FakeRemediationLLM` for 100% offline, zero-network, deterministic execution.
+  - `LangChainRemediationLLM` backed by `ChatOpenAI` with structured JSON outputs and robust fallback parsing.
+
+### Files Added / Changed
+- `app/remediation/models.py`: Domain enums (`RemediationStatus`, `ChangeType`), dataclasses (`ProposedChange`, `RemediationValidation`, `RemediationProposal`), exceptions (`RemediationNotFoundError`, `RemediationIneligibleError`), and Pydantic schemas.
+- `app/remediation/repository.py`: Interface `RemediationRepository` and thread-safe `InMemoryRemediationRepository`.
+- `app/remediation/validator.py`: Deterministic `RemediationValidator` enforcing strong file/symbol grounding, provenance, and structure.
+- `app/remediation/prompts.py`: System prompts for remediation proposal generation and bounded revision.
+- `app/remediation/llm.py`: `RemediationLLM` protocol, deterministic `FakeRemediationLLM`, and `LangChainRemediationLLM`.
+- `app/remediation/service.py`: Orchestrator `RemediationService` handling eligibility checks, generation, bounded revision, and idempotency.
+- `app/remediation/dependencies.py`: FastAPI dependency injection providers.
+- `app/remediation/routes.py`: FastAPI endpoints for `POST /incidents/{incident_id}/remediation` and `GET /incidents/{incident_id}/remediation`.
+- `app/remediation/__init__.py`: Public package exports.
+- `app/api/__init__.py`: Registered `remediation_router` in the application router.
+- `tests/test_remediation.py`: 17 comprehensive unit and integration tests covering eligibility gates, validation rules, idempotency, revision recovery, zero-mutation safety, and APIs.
+
+### Problems Encountered
+- **Problem 1 (FastAPI Dependency Injection in Test Overrides)**: In `test_validation_failure_details_are_persisted_and_api_visible` and `test_bounded_revision_recovers_from_initial_validation_failure`, monkeypatching a locally instantiated `rem_service._llm` did not affect the FastAPI test client, because routes invoke `get_remediation_service` which resolves `get_remediation_llm()` via FastAPI dependency injection.
+  - *Solution*: Utilized FastAPI's standard `app.dependency_overrides[get_remediation_llm] = lambda: fake_llm` pattern with clean `finally` teardown, ensuring test client calls route through the overridden mock provider.
+- **Problem 2 (Semantic Grounding: Redundant Source-Code Modify on Existing Control Endpoint)**: Real-provider verification with OpenAI exposed that the LLM proposed `target_file: demo_app/api/admin.py`, `target_symbol: disable_order_processing_failure`, `change_type: modify`, with description `"Add a call to disable the order processing error mode before creating an order."`. This was semantically invalid because `disable_order_processing_failure` already disables the failure mode in its retrieved implementation, is an administrative endpoint rather than the order-creation path, and should be represented as an operational/configuration mitigation (`change_type: configuration`) rather than a source-code modification to the control itself.
+  - *Root Cause*: Remediation prompts did not instruct the LLM to distinguish operational/configuration mitigations using existing controls from actual source-code modifications to the failing execution path. Furthermore, the validator only checked whether the symbol existed in retrieved code chunks without verifying that the described modification was logically compatible with the symbol's actual retrieved code or whether modifying it to "add disabling behavior" was redundant.
+  - *Solution*:
+    1. **Prompt Strengthening**: Updated `REMEDIATION_PROPOSAL_SYSTEM_PROMPT` and `REMEDIATION_REVISION_SYSTEM_PROMPT` to explicitly distinguish between operational mitigations (`change_type: "configuration"` for invoking or setting existing controls) and source-code modifications (`change_type: "modify"`, `"add"`, `"remove"` strictly on the faulty execution path). Forbade redundant proposals that add behavior to functions that already implement that exact behavior, and forbade modifying administrative endpoints to inject order-creation logic.
+    2. **Deterministic Validator Strengthening**: Added `_check_change_semantic_compatibility` in `RemediationValidator` (`app/remediation/validator.py`). Enforces that source-code modifications (`modify/add/remove`) must not target an existing control symbol to redundantly "add" disabling behavior when the retrieved code already implements that behavior, and must not inject order-creation flow logic into administrative controls. Appropriately represented operational mitigations (`change_type == ChangeType.CONFIGURATION`) using existing controls are cleanly permitted.
+    3. **Provider Recovery**: Updated `FakeRemediationLLM` to propose `CONFIGURATION` when encountering existing disable controls, and automatically recover redundant `MODIFY` changes to `CONFIGURATION` on revision.
+    4. **Regression Suite**: Added 3 new tests in `tests/test_remediation.py` verifying that redundant `MODIFY` on `disable_order_processing_failure` is rejected with actionable diagnostics, grounded `CONFIGURATION` mitigations on existing controls are accepted, and bounded revision recovers the redundant modification to a valid configuration change.
+
+### Verification
+- Executed `pytest tests/test_remediation.py`: all 20 Stage 8 tests passed in 1.13s.
+- Executed full project test suite `pytest`: all 165 tests passed in 30.96s with a 100% pass rate and zero regressions across all Stages 0 through 8.
+- Verified proposal-only safety: repository `git status --porcelain` is identical before and after proposal generation (zero file writes, zero branch operations, zero commits).
+- Verified pre-existing dirty working-tree tolerance: pre-existing unstaged modifications do not invalidate proposal generation.
+- Verified strong file and symbol grounding: unretrieved repository files are rejected even if they physically exist on disk.
+- Verified provenance isolation: historical incident IDs cannot masquerade as current grounding evidence.
+- Verified bounded 1-pass revision: failing initial generation recovers when revised, or is stored as `failed_validation` with full diagnostic details.
+- Verified rejection of redundant `MODIFY` proposals on existing disable/reset controls.
+- Verified acceptance of grounded `CONFIGURATION` operational mitigations targeting existing controls.
+
+### Known Limitations
+- Proposal-only: Does not create git branches, write patches to disk, or execute fixes (deferred to Stage 9 human-in-the-loop approval and execution).
+- In-memory proposal storage: Proposals persist during server process runtime.
+
+### User Approval
 Pending
-
-
-
