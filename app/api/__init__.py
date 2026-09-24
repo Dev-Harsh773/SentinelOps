@@ -5,6 +5,7 @@ without turning main.py into a large, tightly coupled file.
 """
 
 from fastapi import APIRouter
+from app.agents.routes import router as investigation_router
 from app.api.health import router as health_router
 from app.incidents.routes import router as incidents_router
 from app.repository.routes import router as git_router
@@ -17,3 +18,4 @@ api_router.include_router(incidents_router)
 api_router.include_router(telemetry_router)
 api_router.include_router(repository_router)
 api_router.include_router(git_router)
+api_router.include_router(investigation_router)

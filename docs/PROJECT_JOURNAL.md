@@ -410,4 +410,191 @@ Provide SentinelOps with deterministic, read-only local Git repository inspectio
 - Stage 5 does not perform automated incident causality analysis or commit blame linking.
 
 ### User Approval
+Approved
+
+---
+
+## Stage 6 — First LangGraph / AI Investigation Workflow
+
+### Objective
+Introduce the first AI-assisted incident investigation workflow into SentinelOps by orchestrating deterministic services (Incident Management, Runtime Telemetry Evidence, Source-Code AST Retrieval, Git Change Intelligence) and LLM reasoning through LangGraph. Produce structured, evidence-grounded Root Cause Analyses (RCA) citing concrete evidence identifiers with bounded validation and revision loops, without performing code modifications, patch generation, branch creation, commits, merges, or deployments.
+
+### Design Decision
+- **LangGraph Multi-Node Orchestration**: Decomposed the investigation into discrete, single-responsibility nodes (`analyze_runtime`, `retrieve_code`, `analyze_code`, `retrieve_git_context`, `analyze_changes`, `synthesize_rca`, `validate_rca`, `revise_rca`) rather than relying on an unbounded monolithic prompt or autonomous tool execution.
+- **Strict Separation of Deterministic Retrieval vs LLM Reasoning**: The LLM is never given direct access to the filesystem, shell commands, or Git. Retrieval is completely deterministic via `RetrievalService` and `GitService`; the retrieved structured context is passed cleanly into LLM reasoning nodes.
+- **Structured Output Typing**: Defined typed Pydantic models and domain dataclasses (`RuntimeAnalysis`, `CodeAnalysis`, `ChangeAnalysis`, `RootCauseAnalysis`, `RCAValidation`, `Investigation`) ensuring robust parsing and predictable API contracts.
+- **Concrete Evidence Grounding**: Enforced that supporting evidence citations in the RCA reference verified, concrete IDs: runtime evidence UUIDs, deterministic code chunk IDs (`chunk-<hash>`), and hexadecimal Git commit hashes.
+- **Adversarial Validation & Bounded Revision**: Introduced a dedicated validation node that checks RCA claims against supplied evidence, detecting ungrounded claims or hallucinated external technologies (such as Redis or unprovided databases). Utilized LangGraph conditional routing to trigger a revision node with a strict upper bound (maximum 1 revision / 2 validation checks total) to eliminate infinite loops.
+- **Pluggable LLM Provider & 100% Offline Testing**: Implemented `InvestigationLLM` protocol with `FakeInvestigationLLM` for deterministic, zero-cost, network-free local testing and `LangChainInvestigationLLM` for production OpenAI structured outputs via `ChatOpenAI.with_structured_output`. Wrapped provider errors in domain exceptions to prevent leaking API keys.
+- **Fail-Safe Edge Handling**: Implemented graceful error recovery for empty evidence (HTTP 409 `NoEvidenceForInvestigationError`), non-existent incidents (HTTP 404), unindexed or empty code retrieval (proceeds with lower confidence and explicit uncertainty notes), and missing Git history.
+
+### Files Added / Changed
+- `requirements.txt`: Added `langgraph`, `langchain-core`, and `langchain-openai`.
+- `.env.example`: Added `LLM_PROVIDER=mock`, `LLM_MODEL=gpt-4o-mini`, `OPENAI_API_KEY=`.
+- `app/common/config.py`: Added `llm_provider`, `llm_model`, `openai_api_key`, `git_context_limit`, and `rca_max_revisions` to `AppConfig`, with `.env` file loading support.
+- `app/agents/models.py`: Created domain models (`EvidenceReference`, `RuntimeAnalysis`, `CodeAnalysis`, `ChangeAnalysis`, `RootCauseAnalysis`, `RCAValidation`, `InvestigationStatus`, `Investigation`) and domain exceptions (`InvestigationNotFoundError`, `NoEvidenceForInvestigationError`, `InvestigationLLMError`). Enhanced `RootCauseAnalysis` with `failure_location` and `triggering_condition`.
+- `app/agents/schemas.py`: Created Pydantic request/response schemas for investigation endpoints and structured LLM outputs, including `failure_location` and `triggering_condition`.
+- `app/agents/prompts.py`: Created centralized system prompts distinguishing `symptom`, `failure_location`, `triggering_condition`, and `root_cause_hypothesis`, with explicit Git relevance qualification rules.
+- `app/agents/llm.py`: Implemented `InvestigationLLM` protocol, deterministic `FakeInvestigationLLM` (with commit deduplication across files, regex-based triggering condition extraction, baseline Git commit exclusion from causal citations, and depth validation), and production `LangChainInvestigationLLM` (with commit deduplication and structured mapping).
+- `app/workflows/investigation_state.py`: Created `InvestigationState` TypedDict for LangGraph state management.
+- `app/workflows/investigation_graph.py`: Created LangGraph state machine with 8 nodes, conditional validation routing, and bounded revision loop.
+- `app/agents/repository.py`: Created `InvestigationRepository` interface and `InMemoryInvestigationRepository`.
+- `app/agents/service.py`: Created `InvestigationService` orchestrating input validation, graph execution, and persistence.
+- `app/agents/dependencies.py`: Created FastAPI dependency injection providers, strictly enforcing no silent mock fallback when `LLM_PROVIDER=openai` without an API key (raises `InvestigationLLMError`).
+- `app/agents/routes.py`: Created `POST /incidents/{incident_id}/investigate` and `GET /incidents/{incident_id}/investigation` with proper exception mapping and response formatting.
+- `app/agents/__init__.py`: Exported public investigation symbols.
+- `app/workflows/__init__.py`: Exported public workflow symbols.
+- `app/api/__init__.py`: Registered `investigation_router` in `api_router`.
+- `app/main.py`: Added global exception handler for `InvestigationLLMError` returning HTTP 502 Bad Gateway.
+- `app/retrieval/index.py`: Added `clear()` method to `CodeIndex` for test isolation.
+- `tests/test_investigation.py`: Created comprehensive 16-test suite covering graph happy path, evidence grounding preservation, unsupported claim detection, bounded revision, retry limits, 404/409 error handling, empty code/git recovery, zero network calls assertion, RCA depth & triggering condition verification, Git baseline citation omission, commit deduplication, and explicit OpenAI provider error handling.
+- `README.md`: Updated to Stage 6 documentation with full manual demo workflow, corrected curl commands (`/admin/failures/order-processing/enable`, `/evidence/collect`), LLM configuration, and scope boundaries.
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 5 to Approved and added comprehensive Stage 6 record.
+
+### Problems Encountered
+1. In `CodeIndex`, no `clear()` method existed to reset the in-memory index between isolated test runs, leading to `AttributeError: 'CodeIndex' object has no attribute 'clear'`.
+2. In `app/agents/service.py`, `evidence_repository.get_by_incident()` was called instead of the interface method `list_for_incident()`, raising an `AttributeError`.
+3. In `tests/test_investigation.py`, the 404 assertion checked for `"Incident '...' not found"` instead of matching the exact domain message format `"Incident with ID '...' not found."`.
+4. Live testing identified shallow RCA outputs (naming the exception class rather than underlying triggering condition), baseline commits being cited as causal evidence, and multiple file references duplicating Git commits in change analysis.
+
+### Attempts
+1. Verified `CodeIndex` attributes and thread safety locking in `app/retrieval/index.py`.
+2. Checked method definitions in `EvidenceRepository` in `app/telemetry/repository.py`.
+3. Checked exception formatting in `IncidentNotFoundError` in `app/incidents/service.py`.
+4. Analyzed causal chain representation and evidence relevance filtering across `FakeInvestigationLLM` and `LangChainInvestigationLLM`.
+
+### Final Solution
+1. Added thread-safe `clear()` method to `CodeIndex` to reset chunks, document frequencies, and index status.
+2. Updated `InvestigationService.investigate` to call `list_for_incident(incident_id)`.
+3. Updated the 404 test assertion to verify `unknown_id in res.json()["detail"] and "not found" in res.json()["detail"].lower()`.
+4. Enriched RCA schema, prompts, and implementations to distinguish `symptom`, `failure_location`, `triggering_condition`, and `root_cause_hypothesis`.
+5. Added commit hash deduplication across multiple files in `analyze_changes`.
+6. Enforced that baseline/initial commits are retained in `git_context` and `change_analysis` but excluded from `supporting_evidence` (noted in `uncertainties`).
+7. Added explicit `InvestigationLLMError` handling without mock fallback when `LLM_PROVIDER=openai` is missing an API key.
+
+### Why It Worked
+Thread-safe clearing ensures test independence, interface conformity ensures reliable repository interaction, causal depth separation prevents shallow RCA tautologies, commit deduplication eliminates redundant facts, and relevance filtering prevents baseline repository history from being falsely blamed.
+
+### Real-Provider Reliability Fixes (OpenAI Provider Hardening)
+- **Problem 1 (Cascading Reasoning Failure)**: When testing Stage 6 with a live OpenAI key (`gpt-4o-mini`), all reasoning stages failed: `runtime_analysis`, `code_analysis`, and `change_analysis` became `null`. The graph failed open into `synthesize_rca`, where the LLM hallucinated ungrounded symbols (`OrderService.checkout_order`) and unsupplied payload fields (`email`, `shipping_address`). Although the validator correctly marked the RCA invalid (`valid=False`), `InvestigationService` incorrectly marked the investigation `completed` because an RCA object existed.
+- **Root Cause 1**:
+  1. `LangChainInvestigationLLM.analyze_runtime` attempted to access `incident.description`. The `Incident` domain model has `summary`, not `description`, causing an uncaught `AttributeError`.
+  2. In `investigation_graph.py`, LangGraph lacked fail-closed routing edges after `analyze_runtime` and `analyze_code`, allowing execution to continue into RCA synthesis with missing prerequisite analyses.
+  3. `synthesize_rca_node` lacked defensive preconditions guarding against missing upstream reasoning.
+  4. `InvestigationService.investigate` computed `status = InvestigationStatus.COMPLETED if rca else InvestigationStatus.FAILED`, ignoring `validation.valid`.
+  5. Grounding checks were partially split between mock and real providers without a single shared deterministic grounding layer.
+- **Problem 2 (RCA Synthesis NameError)**: Real OpenAI execution succeeded through runtime, code, and Git analysis but exposed a `NameError` in RCA synthesis (`RCA synthesis failed: Root cause analysis synthesis failed: NameError`).
+- **Root Cause 2**:
+  In `LangChainInvestigationLLM.synthesize_rca`, retrieved source code chunks were formatted into variable `chunks_context`, but the prompt construction f-string referenced `{chunks_text}`, triggering an undefined identifier `NameError`.
+- **Problem 3 (Incomplete Evidence Citations & Correlation Dropping)**: Real OpenAI execution succeeded end-to-end (`status = completed`, `errors = []`, valid causal chain identifying `OrderService.create_order` and `self._failure_controller.is_order_processing_error_enabled()`), but the RCA's `supporting_evidence` only cited runtime evidence and omitted the retrieved code chunk (`chunk-dd04b3223edb3561`), despite making code-level causal claims. Furthermore, `runtime_analysis.request_ids` was dropped when log entries were formatted without explicitly passing `request_id` to the LLM prompt.
+- **Root Cause 3**:
+  1. The grounding validator in `app/agents/grounding.py` did not enforce mandatory code chunk citation when code-level claims were made, nor mandatory runtime citation when runtime logs were present.
+  2. Prompts in `app/agents/prompts.py` did not explicitly mandate citing retrieved code chunk IDs whenever asserting code-level failure sites.
+  3. Log formatting in `LangChainInvestigationLLM.analyze_runtime` omitted `e.request_id` in prompt text and relied solely on LLM schema extraction without deterministic fallback preservation.
+- **Final Solution**:
+  1. **Fixed Undefined Identifier**: Corrected `{chunks_text}` to `{chunks_context}` in `LangChainInvestigationLLM.synthesize_rca`.
+  2. **Refined Change Analysis Prompts**: Explicitly instructed `CHANGE_ANALYSIS_SYSTEM_PROMPT` that touching a file does not prove causation and initial/baseline commits must not be treated as regressions or evidence of bugs.
+  3. **Strict Lifecycle Status**: Enforced `InvestigationStatus.COMPLETED` only if `rca is not None and validation is not None and validation.valid is True`.
+  4. **Shared Deterministic Grounding Validator**: Created and hardened `app/agents/grounding.py`:
+     - Requires at least one valid runtime evidence citation if runtime logs exist.
+     - Requires at least one valid code chunk citation if code chunks exist and code-level claims are asserted (`failure_location`, `affected_component`, or code symbols in hypothesis/summary).
+     - Strictly verifies that every cited ID actually exists in provided evidence context, rejecting fabricated IDs.
+     - Uncited or fabricated evidence marks `valid=False`, triggering bounded revision.
+  5. **Prompt Hardening**: Updated `RCA_SYNTHESIS_SYSTEM_PROMPT`, `RCA_VALIDATION_SYSTEM_PROMPT`, and `RCA_REVISION_SYSTEM_PROMPT` to mandate citing both runtime evidence and code chunk IDs.
+  6. **Correlation & Request ID Preservation**: Added `Request ID: {e.request_id or 'none'}` to runtime prompt lines in `LangChainInvestigationLLM.analyze_runtime` and deterministically preserved all non-empty request IDs from evidence.
+  7. **Deterministic Revision Repair**: Equipped `FakeInvestigationLLM.revise_rca` and `LangChainInvestigationLLM.revise_rca` to add missing code chunk and runtime citations when needed during revision.
+  8. **Comprehensive Regression Suite**: Added 7 new regression tests (Tests 17–23) in `tests/test_investigation.py` verifying all citation guardrails, revision repairs, and correlation ID preservation.
+
+- **Problem 4 (Runtime Evidence Type/ID Mismatch & Endpoint Enablement Over-Specification)**: Real OpenAI execution successfully reached full RCA generation with runtime, code, Git, and request ID propagation confirmed working. However, the final investigation returned `status = failed` and `validation.valid = false` due to two issues:
+  1. The RCA cited a legitimate runtime evidence ID (`37e17189-3d70-48ff-998a-b9a47aeb49e1`) with `type="runtime"`, but the validator reported `"The RCA does not provide a valid runtime evidence reference"` because the semantic validation prompt stripped `ref.type` information (presenting only a string array of IDs) and the deterministic checker strictly expected exact `"runtime"` string matches without normalizing UUIDs or mapping `type="runtime"` to stored `type="runtime_log"` domain representations.
+  2. The RCA made an unsupported causal claim stating that the failure mode was enabled via the admin `enable_order_processing_failure` endpoint, when collected incident telemetry contained only the failed `/orders` request without evidence proving the admin endpoint was invoked.
+- **Root Cause 4**:
+  1. `run_deterministic_grounding_check` lacked flexible type aliasing (`runtime`, `runtime_log`) and whitespace/casing normalization for evidence UUIDs. Furthermore, `LangChainInvestigationLLM.validate_rca` constructed the prompt using raw IDs (`Supporting Evidence IDs Cited: [...]`) rather than structured type-id pairs (`[type=..., id=...]`), leading the LLM auditor to believe no `type="runtime"` citation was provided.
+  2. Prompting and validation did not strictly enforce the distinction between "a condition evaluated true" (which can be legitimately inferred from execution path and exception) versus "how that condition became true" (which requires direct supporting telemetry of that specific endpoint invocation or event).
+- **Final Solution**:
+  1. **Flexible Type Mapping & ID Normalization**: Added `VALID_RUNTIME_TYPES = {"runtime", "runtime_log", "runtime-log"}` and normalized string IDs to guarantee domain `runtime_log` evidence matches `runtime` citations seamlessly.
+  2. **Authoritative Citation Reconciliation**: Updated `validate_rca` prompt to show full `[type=..., id=...]` pairs and reconciled deterministic verification so that verified citations cannot be hallucinated as missing by the semantic auditor.
+  3. **Causal Precision Prompts**: Hardened `RCA_SYNTHESIS_SYSTEM_PROMPT`, `RCA_VALIDATION_SYSTEM_PROMPT`, and `RCA_REVISION_SYSTEM_PROMPT` to mandate that agents state what condition evaluated true rather than claiming unobserved admin endpoint invocations.
+  4. **Unevidenced Endpoint Enablement Validator**: Added deterministic checks rejecting claims that an unobserved admin or enablement endpoint was invoked when telemetry from that endpoint is absent from incident evidence.
+  5. **Regression Suite**: Added 8 comprehensive regression tests (Tests 24–31) covering runtime ID acceptance, `runtime_log` mapping, fabricated ID rejection, code chunk ID acceptance, unevidenced endpoint claim rejection, condition evaluation allowance, and bounded revision repair.
+
+- **Problem 5 (Overly Strict Validator Rejecting Legitimate Control-Flow Inference)**: In real OpenAI verification, the workflow produced an appropriately grounded RCA identifying `OrderService.create_order`, `self._failure_controller.is_order_processing_error_enabled() evaluated true`, cited valid runtime and code evidence, and qualified that available evidence did not establish how or when the condition became true. However, validation failed because the validator demanded separate telemetry proving that the boolean condition evaluated true.
+- **Root Cause 5**:
+  The validator did not recognize grounded control-flow inferences. In the codebase, retrieved source code clearly shows the direct control flow (`if self._failure_controller.is_order_processing_error_enabled(): raise OrderProcessingError(...)`), and runtime traceback proved execution reached the `raise OrderProcessingError` statement inside that branch. Together, `runtime execution reached branch body` + `source code shows branch body executes only when condition is truthy` constitutes a fully grounded control-flow inference. The validator failed to distinguish between:
+  - *Allowed*: Grounded control-flow inference (branch condition inferred from executed branch body + source code).
+  - *Not allowed*: Historical state-origin claims (how or when the condition became true, e.g. admin endpoint was called, was enabled) without supporting telemetry.
+- **Final Solution**:
+  1. **Deterministic Branch Extraction & Control-Flow Validation**: Added `_extract_guarded_branches` in `app/agents/grounding.py` utilizing AST parsing with disk fallback and regex support. Verified that:
+     - Traceback reaches statement inside branch body -> claim that condition evaluated truthy/falsey is allowed.
+     - Traceback does not reach branch body -> truth-value claim is rejected as ungrounded.
+     - Fabricated conditions not present in retrieved code fail immediately.
+     - Historical state-origin claims ("was enabled", "admin endpoint was called") without telemetry remain strictly rejected.
+     - Both runtime evidence and code chunk citations are strictly required to support the branch inference.
+  2. **Auditor Prompt Alignment**: Hardened `RCA_VALIDATION_SYSTEM_PROMPT` in `app/agents/prompts.py` to instruct the LLM auditor not to demand separate telemetry for boolean evaluations when execution reached the guarded branch.
+  3. **Authoritative Semantic Reconciliation**: Equipped `LangChainInvestigationLLM.validate_rca` in `app/agents/llm.py` to filter out spurious LLM complaints demanding boolean evaluation telemetry when deterministic validation confirms a grounded control-flow inference.
+  4. **Regression Suite**: Added 7 new regression tests (Tests 32–38) in `tests/test_investigation.py` covering reached branch allowance, unreached branch rejection, state origin claim rejection, admin endpoint claim rejection, mandatory runtime+code citation pairs, current demo RCA validation, and fabricated condition rejection.
+
+- **Problem 6 (Validation Consistency & Baseline Git Speculation)**:
+  1. *Validation Consistency*: In real OpenAI verification, the validator returned `valid = true`, `issues = []`, `unsupported_claims = []`, but `missing_evidence = ["Direct telemetry evidence showing ... evaluated true"]`. This was contradictory: once a control-flow condition inference is accepted as grounded, direct telemetry is satisfied and must not be reported as missing evidence.
+  2. *Baseline Git Speculation*: Git change analysis on initial/baseline repository commits contained speculative wording that the initial commit "may have altered the flow" or "may relate to the error". Baseline commits represent initial state, not regressions or alterations to flow, and cannot establish causation.
+- **Root Cause 6**:
+  1. The semantic/deterministic validation merge did not remove satisfied condition telemetry requirements from `missing_evidence`, and the system lacked an enforced invariant linking `valid = true` to `missing_evidence = []`.
+  2. Prompting and change analysis post-processing allowed speculative hedging words ("may have altered", "may relate") on commits identified as baseline commits.
+- **Final Solution 6**:
+  1. **Strict Validation Invariants**: Enforced in `app/agents/grounding.py` and `app/agents/llm.py` that:
+     - Accepted branch condition inference removes spurious telemetry demands from `issues`, `unsupported_claims`, and `missing_evidence`.
+     - `valid = true` $\implies$ `missing_evidence = []` (invariant: `valid = true` must NEVER contain unresolved required missing evidence).
+     - Genuinely missing required evidence $\implies$ `valid = false` and non-empty `missing_evidence`.
+  2. **Baseline Git Non-Speculative Wording**: Updated `CHANGE_ANALYSIS_SYSTEM_PROMPT` (Rule 3) and `analyze_changes` in both fake and real LLM implementations to forbid speculative causal language on baseline commits, ensure they are kept as context without implying regressions or flow alterations, and explicitly state in `potential_relationships` and `inferences` that causation cannot be established from baseline history alone.
+  3. **Regression Suite**: Added Tests 39–42 in `tests/test_investigation.py` verifying:
+     - Accepted branch inference results in `valid = true` and `missing_evidence = []`.
+     - Genuinely missing required evidence results in `valid = false` and non-empty `missing_evidence`.
+     - Invariant that `valid = true` never contains unresolved required missing evidence.
+     - Baseline Git analysis contains no speculative wording and includes the explicit non-causation disclaimer.
+
+- **Problem 7 (Semantic Validator False Positive Conflating Condition with Enablement & Empty Error Suffix)**:
+  1. *Validator False Positive*: In real OpenAI verification, the semantic validator produced a false-positive unsupported claim by conflating "condition evaluated true" with "failure mode was enabled". The validator returned: `unsupported_claims: ["The RCA states that the failure mode 'was enabled' without direct telemetry evidence..."]`, despite the RCA never asserting that the failure mode was enabled (the RCA only stated `self._failure_controller.is_order_processing_error_enabled() evaluated true` and explicitly stated in `uncertainties` that evidence did not establish how or when the failure condition became true).
+  2. *Empty Error Message Suffix*: When validation failed with findings in `unsupported_claims` but empty `issues`, `InvestigationService` emitted an incomplete error message `"RCA validation failed: "` because it only joined `validation.issues`.
+- **Root Cause 7**:
+  1. The validator hallucinated an allegation about text absent from the RCA, and the system lacked claim-presence verification comparing alleged claims against actual text components in the RCA (`failure_location`, `triggering_condition`, `root_cause_hypothesis`, `summary`, supporting evidence, `uncertainties`).
+  2. `InvestigationService.investigate` constructed the failure message using only `validation.issues`, ignoring `unsupported_claims` and `missing_evidence`.
+- **Final Solution 7**:
+  1. **Claim-Presence / Grounding Reconciliation**: Added `get_rca_text_corpus`, `rca_contains_enablement_claim`, and `reconcile_semantic_validation_findings` in `app/agents/grounding.py` and integrated it into `LangChainInvestigationLLM.validate_rca` in `app/agents/llm.py`. Any validator allegation claiming the failure mode "was enabled" or that an enablement endpoint was called is discarded as a false positive if the RCA text itself does not assert enablement claims.
+  2. **Preserved Distinctions**: Maintained full support for grounded control-flow inferences (`condition evaluated true` when traceback reached guarded branch + source code shows guard), while strictly retaining rejection when the RCA actually asserts an enablement action occurred without telemetry.
+  3. **Robust Error Construction**: Updated `InvestigationService.investigate` in `app/agents/service.py` to build the error message from deduplicated items across `issues`, `unsupported_claims`, and `missing_evidence`, and never emit an empty trailing message like `"RCA validation failed: "`.
+  4. **Prompt Hardening**: Clarified in `RCA_VALIDATION_SYSTEM_PROMPT` (`app/agents/prompts.py`) that the validator must evaluate only actual RCA claims and never invent allegations about "was enabled".
+  5. **Regression Suite**: Added Tests 43–51 in `tests/test_investigation.py` verifying:
+     - RCA with `condition evaluated true` where validator invents `"failure mode was enabled"` -> false-positive finding is discarded (`valid=True`).
+     - RCA actually saying `"failure mode was enabled"` without telemetry -> finding remains and validation fails.
+     - RCA saying admin endpoint was called without telemetry -> validation fails.
+     - Grounded branch-condition inference -> validation passes.
+     - Valid RCA -> `missing_evidence=[]`.
+     - Valid RCA -> no `"RCA validation failed"` entry in errors.
+     - Invalid RCA with only `unsupported_claims` -> error message contains the unsupported claim without empty suffix.
+     - Invalid RCA with only `missing_evidence` -> error message is meaningful without empty suffix.
+     - Duplicate validation findings across categories are deduplicated.
+
+### Verification
+- Executed `pytest -v tests/test_investigation.py`; all 66 tests passed in 15.16s.
+- Executed full project test suite `pytest -v`; all 131 tests across Stages 0 through 6 passed in 40.61s with a 100% pass rate and zero regressions.
+- Verified zero network calls assertion: test execution does not trigger external network calls.
+- Verified valid runtime evidence ID (`37e17189-3d70-48ff-998a-b9a47aeb49e1`) and `runtime_log` mapping are cleanly accepted.
+- Verified unevidenced endpoint enablement claims are rejected and cleanly repaired via bounded revision.
+- Verified grounded control-flow inferences are accepted while unevidenced state origins and fabricated conditions are rejected.
+- Verified validator false-positive enablement allegations are discarded when RCA text contains no enablement claim.
+- Verified robust deduplicated error construction on validation failure.
+- Verified validation consistency: `valid = true` guarantees `missing_evidence = []`.
+- Verified non-speculative baseline Git analysis.
+
+### Known Limitations
+- Investigation only; no fix proposal, code patch generation, branch creation, or remediation validation is performed (deferred to later stages).
+- In-memory investigation storage; investigation results persist during process runtime but are not stored in an external database.
+- Synchronous graph execution; asynchronous task queues (Celery/Redis) are intentionally avoided in Stage 6 to keep the MVP lightweight and testable.
+
+### Real-provider verification
+Pending (manual verification with OpenAI provider)
+
+### User Approval
 Pending
+
+

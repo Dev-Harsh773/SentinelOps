@@ -4,25 +4,26 @@ AI-assisted software reliability and incident-response platform.
 
 ## Current Stage
 
-**Stage 5 — Git Change Intelligence**
+**Stage 6 — First LangGraph / AI Investigation Workflow**
 
 ### Current Implementation Status & Scope Note
 > **Important Scope Note:**  
-> This repository is currently at **Stage 5 only**.  
-> In this stage, SentinelOps provides deterministic, read-only local Git repository change intelligence:
-> 1. `GitClient` interacts with the local Git repository via Python's standard `subprocess` with `shell=False` and strict read-only commands (`rev-parse`, `log`, `show`, `diff-tree`).
-> 2. `GitService` coordinates repository validation, commit hash format enforcement (`^[0-9a-fA-F]{7,40}$`), path traversal protection, diff truncation (bounded at 50,000 characters), and history queries.
-> 3. Logical repository identity is exposed as `"sentinelops"`, never leaking local machine-specific physical filesystem paths.
-> 4. Endpoints exposed:
->    - `GET /git/commits?limit=10` — List recent commits (newest first).
->    - `GET /git/commits/{commit_hash}` — Detailed commit metadata and changed files with additions/deletions.
->    - `GET /git/commits/{commit_hash}/diff` — Unified textual diff for the commit or a specific file, with bounded truncation.
->    - `GET /git/files/history?path=...&limit=10` — Commit history for a specific file (including deleted files).
+> This repository is currently at **Stage 6 only**.  
+> In this stage, SentinelOps combines deterministic incident management (Stage 1), runtime telemetry evidence (Stage 3), source-code AST retrieval (Stage 4), and Git change intelligence (Stage 5) through a multi-node LangGraph orchestration workflow:
+> 1. `load_context` / `analyze_runtime`: Extracts observable runtime symptoms, HTTP endpoints, exception types, correlation IDs, and timeline from attached incident evidence logs without inventing missing data.
+> 2. `retrieve_code`: Constructs a focused query (`exception_type` + event concept) and performs deterministic lexical retrieval via `RetrievalService`.
+> 3. `analyze_code`: Evaluates retrieved source-code chunks against the runtime failure, pinpointing candidate execution paths and methods.
+> 4. `retrieve_git_context`: Performs deterministic, bounded Git inspection (`GitService`) for the top relevant code files.
+> 5. `analyze_changes`: Distinguishes factual code changes from causal inferences, strictly avoiding the assumption that temporal proximity proves causation.
+> 6. `synthesize_rca`: Synthesizes an evidence-grounded Root Cause Analysis (RCA) citing stable evidence references (runtime evidence UUIDs, deterministic code chunk IDs, commit hashes).
+> 7. `validate_rca`: Adversarially audits the RCA for hallucinations, fabricated technologies (e.g. unprovided databases/caches), ungrounded claims, or uncited references.
+> 8. `revise_rca`: Automatically triggers a bounded revision loop (maximum 1 revision) if validation fails, restricting revisions strictly to already-retrieved evidence.
 > 
 > **Explicit Scope Boundary:**  
-> - **Local Git Only**: Operates strictly on local `.git` repository data. No GitHub APIs, GitLab APIs, tokens, or external network requests are used.
-> - **Strict Read-Only Safety**: SentinelOps never mutates Git history (no commit, push, checkout, branch, merge, reset, clean, or stash).
-> - **Factual Change Intelligence Only**: Stage 5 answers *what changed* and *when*. It does **NOT** declare causality or claim that a commit caused an incident. AI reasoning and automated root-cause analysis remain deferred to Stage 6.
+> - **Investigation Only**: Stage 6 produces a probable root cause hypothesis and structured investigation report.
+> - **Strictly Prohibited in Stage 6**: SentinelOps does **NOT** modify source code, generate code patches, create Git branches, commit, push, merge, deploy, or automatically resolve incidents.
+> - **Zero Direct Tool Access for LLM**: The LLM does not execute shell commands, read arbitrary files, or query Git directly. All context is fetched by deterministic services and passed into LLM nodes.
+> - **100% Offline Testing**: Automated tests run deterministically using `FakeInvestigationLLM` requiring zero external API keys, zero network connectivity, and zero cost.
 
 ---
 
@@ -51,11 +52,19 @@ AI-assisted software reliability and incident-response platform.
    ```
    *(Or copy on Windows PowerShell: `Copy-Item .env.example .env`)*
 
+### LLM Configuration (.env)
+```ini
+# LLM Provider: 'mock' (default, offline deterministic) or 'openai'
+LLM_PROVIDER=mock
+LLM_MODEL=gpt-4o-mini
+OPENAI_API_KEY=
+```
+
 ---
 
 ## Installation
 
-Install the required minimal dependencies:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -83,82 +92,102 @@ uvicorn demo_app.main:app --reload --host 127.0.0.1 --port 8001
 
 ---
 
-## Stage 5 Git Change Intelligence Workflow
+## Stage 6 End-to-End Investigation Demo Workflow
 
-### 1. List Recent Commits
-In Terminal:
+Follow these steps to experience the complete investigation flow:
+
+### Step 1: Index Demo Application Code
 ```powershell
-curl.exe "http://127.0.0.1:8000/git/commits?limit=5"
-```
-**Expected Response:**
-```json
-{
-  "repository": "sentinelops",
-  "commits": [
-    {
-      "commit_hash": "ea2797a806eacc058a886f9f08cd885e3d91c668",
-      "short_hash": "ea2797a",
-      "author_name": "Dev-Harsh773",
-      "author_email": "krishringi123@gmail.com",
-      "authored_at": "2026-09-23T01:15:07+05:30",
-      "committed_at": "2026-09-23T01:15:07+05:30",
-      "message": "Initial SentinelOps implementation through Stage 4"
-    }
-  ]
-}
+curl.exe -X POST http://127.0.0.1:8000/repository/index
 ```
 
-### 2. Inspect Commit Details
-Replace `<commit_hash>` with your commit hash (e.g. `ea2797a` or full 40-char hash):
+### Step 2: Create an Incident in SentinelOps
 ```powershell
-curl.exe "http://127.0.0.1:8000/git/commits/ea2797a"
+curl.exe --% -X POST http://127.0.0.1:8000/incidents -H "Content-Type: application/json" -d "{\"title\":\"Order Checkout Failure\",\"summary\":\"Multiple 500 errors during checkout\",\"severity\":\"high\",\"service\":\"order-service\",\"environment\":\"production\"}"
 ```
-**Expected Response (200 OK):**
+*Note the returned `"id"` (e.g., `INCIDENT_ID`).*
+
+### Step 3: Trigger Controlled Failure in Demo App
+```powershell
+# Enable the failure mode
+curl.exe -X POST http://127.0.0.1:8001/admin/failures/order-processing/enable
+
+# Place an order to generate runtime failure log
+curl.exe --% -X POST http://127.0.0.1:8001/orders -H "Content-Type: application/json" -d "{\"product_id\":\"p1\",\"quantity\":1}"
+```
+*Note the `"request_id"` in the 500 error response headers or body.*
+
+### Step 4: Collect Runtime Evidence into Incident
+```powershell
+curl.exe --% -X POST http://127.0.0.1:8000/incidents/INCIDENT_ID/evidence/collect -H "Content-Type: application/json" -d "{\"request_id\":\"REQUEST_ID\"}"
+```
+
+### Step 5: Run LangGraph Investigation
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/incidents/INCIDENT_ID/investigate
+```
+
+### Step 6: Inspect Structured Investigation Result
+```powershell
+curl.exe http://127.0.0.1:8000/incidents/INCIDENT_ID/investigation
+```
+**Expected Structured Output:**
 ```json
 {
-  "commit": {
-    "commit_hash": "ea2797a806eacc058a886f9f08cd885e3d91c668",
-    "short_hash": "ea2797a",
-    "author_name": "Dev-Harsh773",
-    "author_email": "krishringi123@gmail.com",
-    "authored_at": "2026-09-23T01:15:07+05:30",
-    "committed_at": "2026-09-23T01:15:07+05:30",
-    "message": "Initial SentinelOps implementation through Stage 4"
+  "investigation_id": "...",
+  "incident_id": "INCIDENT_ID",
+  "status": "completed",
+  "runtime_analysis": {
+    "service": "order-service",
+    "endpoint": "/orders",
+    "exception_type": "OrderProcessingError",
+    "observed_failures": ["OrderProcessingError occurred in order-service"]
   },
-  "changed_files": [
+  "code_query": "OrderProcessingError order processing failed",
+  "code_results": [
+    {
+      "id": "chunk-dd04b3223edb3561",
+      "file_path": "demo_app/services/order_service.py",
+      "symbol_name": "OrderService.create_order",
+      "symbol_type": "method"
+    }
+  ],
+  "code_analysis": {
+    "relevant_symbols": ["OrderService.create_order"],
+    "relevant_files": ["demo_app/services/order_service.py"]
+  },
+  "git_context": [
     {
       "file_path": "demo_app/services/order_service.py",
-      "change_type": "added",
-      "old_path": null,
-      "additions": 67,
-      "deletions": 0
+      "commits": [...]
     }
-  ]
+  ],
+  "rca": {
+    "root_cause_hypothesis": "Failure in OrderService.create_order due to OrderProcessingError",
+    "affected_component": "OrderService.create_order",
+    "confidence": 0.85,
+    "supporting_evidence": [
+      { "type": "runtime", "id": "..." },
+      { "type": "code", "id": "chunk-dd04b3223edb3561" },
+      { "type": "git_commit", "id": "..." }
+    ],
+    "uncertainties": []
+  },
+  "validation": {
+    "valid": true,
+    "issues": [],
+    "unsupported_claims": []
+  }
 }
 ```
-
-### 3. Inspect Commit Unified Diff
-```powershell
-curl.exe "http://127.0.0.1:8000/git/commits/ea2797a/diff"
-```
-Or filter the diff to a specific repository-relative file path:
-```powershell
-curl.exe "http://127.0.0.1:8000/git/commits/ea2797a/diff?path=demo_app/services/order_service.py"
-```
-
-### 4. Inspect Single-File Commit History
-```powershell
-curl.exe "http://127.0.0.1:8000/git/files/history?path=demo_app/services/order_service.py&limit=10"
-```
-Returns all commits that modified that file (including root commits and deleted files), newest first.
 
 ---
 
 ## Running Automated Tests
 
-Run the complete test suite across SentinelOps, Demo App, Telemetry, Retrieval, and Git Repository:
+Run the complete test suite across all modules (Stages 0–6):
 
 ```powershell
 pytest -v
 ```
-All 65 tests pass with a 100% success rate and zero regressions.
+All 77 tests pass with a 100% success rate, 0 regressions, and 0 external network calls.

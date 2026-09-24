@@ -27,6 +27,16 @@ def create_app() -> FastAPI:
     # Register aggregated API routes
     application.include_router(api_router)
 
+    from fastapi.responses import JSONResponse
+    from app.agents.models import InvestigationLLMError
+
+    @application.exception_handler(InvestigationLLMError)
+    async def investigation_llm_exception_handler(request, exc: InvestigationLLMError):
+        return JSONResponse(
+            status_code=502,
+            content={"detail": str(exc)},
+        )
+
     return application
 
 

@@ -87,6 +87,14 @@ class CodeIndex:
         with self._lock:
             return self._indexed_at is not None
 
+    def clear(self) -> None:
+        """Clears all indexed chunks and metadata (primarily for test isolation)."""
+        with self._lock:
+            self._chunks = []
+            self._doc_freq = Counter()
+            self._repository = None
+            self._indexed_at = None
+
     def rebuild(self, repository: str, chunks: List[CodeChunk]) -> None:
         """Atomically replaces the active index with a new collection of chunks and computes document frequencies."""
         now = datetime.now(timezone.utc)
