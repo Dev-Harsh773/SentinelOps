@@ -53,6 +53,9 @@ class AppConfig:
     correlation_post_window_seconds: float
     correlation_fallback_window_seconds: float
     correlation_max_evidence_per_incident: int
+    project_max_files: int
+    project_max_file_bytes: int
+    project_db_path: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -98,6 +101,9 @@ class AppConfig:
             correlation_post_window_seconds=float(os.getenv("CORRELATION_POST_WINDOW_SECONDS", "30.0")),
             correlation_fallback_window_seconds=float(os.getenv("CORRELATION_FALLBACK_WINDOW_SECONDS", "10.0")),
             correlation_max_evidence_per_incident=int(os.getenv("CORRELATION_MAX_EVIDENCE_PER_INCIDENT", "20")),
+            project_max_files=int(os.getenv("PROJECT_MAX_FILES", "500")),
+            project_max_file_bytes=int(os.getenv("PROJECT_MAX_FILE_BYTES", "1000000")),
+            project_db_path=os.getenv("PROJECT_DB_PATH") or None,
         )
 
 

@@ -19,6 +19,12 @@ EXCLUDED_DIR_NAMES = {
     "site-packages",
     "dist",
     "build",
+    "node_modules",
+    ".idea",
+    ".vscode",
+    "logs",
+    ".tox",
+    "coverage",
 }
 
 
@@ -33,10 +39,17 @@ class RepositoryNotFoundError(Exception):
 class SourceScanner:
     """Scans a repository filesystem tree for indexable source code files."""
 
-    def __init__(self, excluded_dirs: set[str] | None = None):
+    def __init__(
+        self,
+        excluded_dirs: set[str] | None = None,
+        max_files: int | None = None,
+        max_file_size: int | None = None,
+    ):
         self._excluded_dirs = (
             {d.lower() for d in excluded_dirs} if excluded_dirs is not None else EXCLUDED_DIR_NAMES
         )
+        self._max_files = max_files
+        self._max_file_size = max_file_size
 
     def scan(self, repository_path: str | Path) -> List[Tuple[str, Path]]:
         """Recursively scans repository_path for Python (.py) files.
@@ -57,21 +70,58 @@ class SourceScanner:
                     continue
 
                 abs_file = (root_path / file_name).resolve()
-                rel_to_repo = abs_file.relative_to(repo_dir).as_posix()
+
+                # Boundary safety: skip symlinks pointing outside the repository root
+                if abs_file.is_symlink():
+                    try:
+                        resolved_target = abs_file.resolve()
+                        resolved_target.relative_to(repo_dir)
+                    except ValueError:
+                        continue
+
+                # File size limit
+                if self._max_file_size is not None:
+                    try:
+                        if abs_file.stat().st_size > self._max_file_size:
+                            continue
+                    except OSError:
+                        continue
+
+                try:
+                    rel_to_repo = abs_file.relative_to(repo_dir).as_posix()
+                except ValueError:
+                    continue
+
                 # Format relative path with logical repository root: e.g. demo_app/services/order_service.py
                 rel_posix_path = f"{repo_name}/{rel_to_repo}" if rel_to_repo != "." else repo_name
                 discovered.append((rel_posix_path, abs_file))
 
-        # Deterministic ordering by relative POSIX path
+        # Deterministic ordering by relative POSIX path BEFORE applying file limit cap
         discovered.sort(key=lambda item: item[0])
+        if self._max_files is not None and len(discovered) > self._max_files:
+            discovered = discovered[: self._max_files]
+
         return discovered
 
 
 def os_walk_filtered(base_dir: Path, excluded_dirs: set[str]):
-    """Generator walking directory tree while pruning excluded directories."""
+    """Generator walking directory tree while pruning excluded directories and external symlinks."""
     import os
 
     for root, dirs, files in os.walk(base_dir):
-        # Prune excluded directories in-place to prevent os.walk from descending
-        dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs]
+        # Prune excluded directories and directory symlinks pointing outside base_dir
+        pruned_dirs = []
+        for d in dirs:
+            if d.lower() in excluded_dirs:
+                continue
+            dir_path = Path(root) / d
+            if dir_path.is_symlink():
+                try:
+                    resolved_dir = dir_path.resolve()
+                    resolved_dir.relative_to(base_dir)
+                except ValueError:
+                    continue
+            pruned_dirs.append(d)
+
+        dirs[:] = pruned_dirs
         yield Path(root), dirs, files

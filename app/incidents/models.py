@@ -36,3 +36,4 @@ class Incident:
     environment: str
     created_at: datetime
     updated_at: datetime
+    project_id: str = "default"

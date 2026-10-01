@@ -21,6 +21,8 @@ async def lifespan(app: FastAPI):
     finally:
         if watcher_service:
             await watcher_service.stop()
+        from app.projects.dependencies import close_project_store
+        close_project_store()
         logger.info("Shutting down %s", config.app_name)
 
 

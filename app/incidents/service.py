@@ -60,6 +60,7 @@ class IncidentService:
             environment=request.environment,
             created_at=now,
             updated_at=now,
+            project_id=request.project_id or "default",
         )
         return self._repository.create(incident)
 

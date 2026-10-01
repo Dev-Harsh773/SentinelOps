@@ -9,6 +9,7 @@ from app.agents.routes import router as investigation_router
 from app.api.health import router as health_router
 from app.incidents.routes import router as incidents_router
 from app.memory.routes import router as memory_router
+from app.projects.routes import router as projects_router
 from app.remediation.routes import router as remediation_router
 from app.repository.routes import router as git_router
 from app.retrieval.routes import router as repository_router
@@ -18,6 +19,7 @@ from app.watcher.routes import router as watcher_router
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(incidents_router)
+api_router.include_router(projects_router)
 api_router.include_router(telemetry_router)
 api_router.include_router(repository_router)
 api_router.include_router(git_router)

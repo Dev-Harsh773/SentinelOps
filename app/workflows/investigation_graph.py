@@ -66,6 +66,7 @@ def build_investigation_graph(
     git_limit: int = 3,
     max_revisions: int = 1,
     memory_service: Optional[IncidentMemoryService] = None,
+    knowledge_service: Optional[Any] = None,
 ) -> StateGraph:
     """Constructs and compiles the multi-node LangGraph investigation workflow."""
 
@@ -111,25 +112,56 @@ def build_investigation_graph(
         code_results: List[Dict[str, Any]] = []
         errors = list(state.get("errors", []))
 
-        try:
-            search_response = retrieval_service.search(query=query, limit=5)
-            for item in search_response.results:
-                code_results.append({
-                    "id": item.id,
-                    "file_path": item.file_path,
-                    "symbol_name": item.symbol_name,
-                    "symbol_type": item.symbol_type,
-                    "start_line": item.start_line,
-                    "end_line": item.end_line,
-                    "content": item.content,
-                    "score": item.score,
-                })
-        except RepositoryNotIndexedError:
-            logger.warning("Repository index has not been built yet during code retrieval.")
-            errors.append("Code repository index is empty or not yet built.")
-        except Exception as exc:
-            logger.warning("Code retrieval search failed: %s", exc)
-            errors.append(f"Code retrieval failed: {exc}")
+        # Three-tier project retrieval resolution (Mandatory Clarification 1)
+        project_id = getattr(state["incident"], "project_id", None) or "default"
+
+        if project_id != "default" and knowledge_service and knowledge_service.has_project(project_id):
+            # Tier 1: Explicit onboarded project -> Strictly project-scoped knowledge
+            try:
+                search_response = knowledge_service.search_code(project_id=project_id, query=query, limit=5)
+                for item in search_response.results:
+                    code_results.append({
+                        "id": item.id,
+                        "file_path": item.file_path,
+                        "symbol_name": item.symbol_name,
+                        "symbol_type": item.symbol_type,
+                        "start_line": item.start_line,
+                        "end_line": item.end_line,
+                        "content": item.content,
+                        "score": item.score,
+                    })
+            except Exception as exc:
+                logger.warning("Project '%s' code retrieval failed: %s", project_id, exc)
+                errors.append(f"Project '{project_id}' code retrieval failed: {exc}")
+        elif project_id != "default":
+            # Tier 3: Explicit non-default project UNKNOWN -> NO legacy fallback!
+            logger.warning(
+                "Project '%s' is not registered in Project Knowledge Base; skipping source retrieval.",
+                project_id,
+            )
+            errors.append(f"Project '{project_id}' is not onboarded in Project Knowledge Base.")
+            code_results = []
+        else:
+            # Tier 2: Legacy incident (default or None) -> Legacy compatibility
+            try:
+                search_response = retrieval_service.search(query=query, limit=5)
+                for item in search_response.results:
+                    code_results.append({
+                        "id": item.id,
+                        "file_path": item.file_path,
+                        "symbol_name": item.symbol_name,
+                        "symbol_type": item.symbol_type,
+                        "start_line": item.start_line,
+                        "end_line": item.end_line,
+                        "content": item.content,
+                        "score": item.score,
+                    })
+            except RepositoryNotIndexedError:
+                logger.warning("Repository index has not been built yet during code retrieval.")
+                errors.append("Code repository index is empty or not yet built.")
+            except Exception as exc:
+                logger.warning("Code retrieval search failed: %s", exc)
+                errors.append(f"Code retrieval failed: {exc}")
 
         return {"code_query": query, "code_results": code_results, "errors": errors}
 
@@ -178,9 +210,28 @@ def build_investigation_graph(
         git_context: List[Dict[str, Any]] = []
         errors = list(state.get("errors", []))
 
+        # Three-tier project Git resolution (Mandatory Clarification 1)
+        project_id = getattr(state["incident"], "project_id", None) or "default"
+
+        active_git = None
+        if project_id != "default" and knowledge_service and knowledge_service.has_project(project_id):
+            active_git = knowledge_service.get_git_service(project_id)
+        elif project_id != "default":
+            logger.warning(
+                "Project '%s' is not registered in Project Knowledge Base; skipping Git retrieval.",
+                project_id,
+            )
+            errors.append(f"Project '{project_id}' is not onboarded in Project Knowledge Base.")
+            return {"git_context": [], "errors": errors}
+        else:
+            active_git = git_service
+
+        if active_git is None:
+            return {"git_context": [], "errors": errors}
+
         for file_path in target_files:
             try:
-                _, commits = git_service.get_file_history(path=file_path, limit=git_limit)
+                _, commits = active_git.get_file_history(path=file_path, limit=git_limit)
                 commit_summaries = []
                 for cm in commits:
                     commit_summaries.append({
@@ -195,7 +246,7 @@ def build_investigation_graph(
                 file_diff = None
                 if commits:
                     try:
-                        diff_res = git_service.get_commit_diff(
+                        diff_res = active_git.get_commit_diff(
                             commit_hash=commits[0].commit_hash,
                             path=file_path,
                             max_chars=5000,

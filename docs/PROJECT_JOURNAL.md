@@ -1113,4 +1113,157 @@ Implement deterministic telemetry correlation and rolling evidence window captur
 ### User Approval
 Approved
 
+---
+
+## Stage 13 — Project Onboarding + Project Knowledge Base
+
+### Objective
+Elevate repository awareness in SentinelOps from a single global configured path to dynamic, multi-tenant project management. Implement first-class project onboarding, workspace identity validation with OS-aware normalization, automatic AST-based route inspection and configuration discovery, persistent metadata storage in SQLite, project-scoped in-memory code indexing and Git change intelligence, lazy restart hydration, atomic reindexing with fatal error preservation, and project-isolated incident investigations with strict zero-leakage fallback guarantees.
+
+### Design Decisions
+- **First-Class Project Domain & Persistence**:
+  - Implemented `Project` model with lifecycle states: `REGISTERED`, `READY`, and `ERROR`.
+  - Persisted project records in SQLite (`SqliteProjectStore`) backed by table `projects`.
+  - Stored canonical POSIX workspace path alongside OS-aware normalized path (`normalized_path TEXT NOT NULL UNIQUE`) with `UNIQUE(normalized_path)` constraint to prevent multiple registrations of the same repository workspace.
+- **OS-Aware Workspace Normalization**:
+  - Derived canonical and normalized workspace paths deterministically:
+    `resolved = Path(workspace_path).resolve()`
+    `canonical_path = resolved.as_posix()`
+    `normalized_path = os.path.normcase(os.path.normpath(str(resolved)))`
+  - Validated that target workspace exists, is a directory, and is not a filesystem root drive (e.g. `C:\` or `/`).
+  - Handled filesystem case-insensitivity on Windows seamlessly: case-varied registration attempts (e.g. `D:\Repos\Orders` vs `d:\repos\orders`) fold to the identical normalized path and trigger HTTP 409 Conflict.
+- **Automated Source Scanner Hardening**:
+  - Extended `SourceScanner` with deterministic lexical sorting before applying `max_files` limits.
+  - Added configurable `max_files` and `max_file_size` bounds with safe defaults (`project_max_files: 500`, `project_max_file_bytes: 1_000_000`).
+  - Expanded directory exclusions: `.venv`, `venv`, `node_modules`, `.git`, `.idea`, `.vscode`, `logs`, `.tox`, `coverage`, `build`, `dist`.
+  - Handled external symlinks securely: pruned symlinks that point outside the repository workspace root.
+- **AST Route Extraction & Configuration Discovery**:
+  - Inspected AST trees across all workspace Python files to detect FastAPI/Flask/Starlette route decorator patterns (`@router.get`, `@app.post`, etc.). Extracted HTTP method, path, relative file path, handler name, and line numbers into `DetectedRoute`.
+  - Discovered top-level configuration manifests (`pyproject.toml`, `requirements.txt`, `setup.py`, `setup.cfg`, `Pipfile`, `docker-compose.yml`, `Dockerfile`) into `ConfigFileInfo`.
+- **Project-Scoped CodeIndex & Git Intelligence**:
+  - In `ProjectKnowledgeService`, maintained separate in-memory `CodeIndex` instances per project ID, isolated behind fine-grained reentrant locks (`threading.RLock`).
+  - Discovered Git metadata (`head_sha`, branch) and derived deterministic version tags: `f"v1-{head_sha[:8]}"` for Git projects, `f"v1-{content_hash[:8]}"` for non-Git source projects.
+  - Provided project-scoped `GitService` instances pointing exclusively to the project's workspace directory.
+- **Lazy Hydration & Version Synchronization**:
+  - If SentinelOps restarts (in-memory index dicts cleared), the first query to a `READY` project lazily re-scans and re-indexes the workspace from disk.
+  - Automatically computes current `index_version` and updates `last_indexed_at` and `index_version` in SQLite, ensuring persisted database state and active in-memory search match exactly.
+- **Non-Destructive Atomic Reindexing & Error Preservation**:
+  - Reindexing runs in an atomic staging step. If reindexing succeeds, the new index and snapshot replace the active in-memory structures, and SQLite is updated.
+  - If reindexing a `READY` project fails (e.g. directory temporarily moved, unreadable), the previous good in-memory `CodeIndex` and snapshot are preserved and remain searchable; `last_indexed_at` and `index_version` are preserved, status remains `READY`, and the error is recorded in `last_index_error` for diagnostics.
+- **Three-Tier Project-Aware Investigation Scoping**:
+  - Normalized project identity in investigation workflows via `project_id = getattr(incident, "project_id", None) or "default"`.
+  - **Tier 1 (Explicit Onboarded Project)**: If `project_id != "default"` and project is registered in `ProjectKnowledgeService`, retrieval searches exclusively that project's `CodeIndex` and project's `GitService`.
+  - **Tier 2 (Legacy Incident Compatibility)**: If `project_id == "default"`, falls back to legacy globally configured `RetrievalService` and `GitService`, ensuring 100% backward compatibility with Stages 4–12 tests.
+  - **Tier 3 (Explicit Un-onboarded Project)**: If `project_id != "default"` and project is NOT registered in `ProjectKnowledgeService`, strictly yields empty code results and empty git context, logs a warning, and appends an informative error notice. Crucially, strictly NO legacy fallback is permitted, preventing cross-tenant code leakage.
+
+### Files Added / Changed
+- `app/projects/models.py`: Domain models `Project` and `ProjectStatus` (`REGISTERED`, `READY`, `ERROR`).
+- `app/projects/schemas.py`: Pydantic schemas `ProjectRegisterRequest` and `ProjectResponse`.
+- `app/projects/storage.py`: SQLite persistence store `SqliteProjectStore` with table `projects` and `UNIQUE(normalized_path)`.
+- `app/projects/service.py`: Domain service `ProjectService` managing onboarding, workspace validation, and lifecycle.
+- `app/projects/dependencies.py`: Dependency injection providers for `SqliteProjectStore` and `ProjectService`.
+- `app/projects/routes.py`: FastAPI routes for `POST /projects`, `GET /projects`, `GET /projects/{project_id}`, `POST /projects/{project_id}/reindex`, `GET /projects/{project_id}/knowledge`, `POST /projects/{project_id}/search`.
+- `app/projects/__init__.py`: Package exports for project onboarding domain.
+- `app/knowledge/models.py`: Domain models `DetectedRoute`, `ConfigFileInfo`, `ProjectKnowledgeSnapshot`.
+- `app/knowledge/service.py`: Domain service `ProjectKnowledgeService` providing indexing, lazy hydration, search, endpoint lookup, and scoped Git intelligence.
+- `app/knowledge/dependencies.py`: Dependency injection providers for `ProjectKnowledgeService`.
+- `app/knowledge/__init__.py`: Package exports for knowledge domain.
+- `app/retrieval/scanner.py`: Updated `SourceScanner` with `max_files`, `max_file_size`, external symlink pruning, expanded directory exclusions, and deterministic sorting.
+- `app/incidents/models.py`: Added first-class `project_id: str = "default"` to `Incident` model.
+- `app/incidents/schemas.py`: Added `project_id: Optional[str] = Field("default", ...)` with validator normalizing `None` to `"default"` in `IncidentCreateRequest`, and `project_id` in `IncidentResponse`.
+- `app/incidents/service.py`: Updated incident creation to persist `project_id`.
+- `app/correlation/engine.py`: Updated telemetry observation to propagate `event.project_id` to `IncidentCreateRequest`.
+- `app/workflows/investigation_graph.py`: Implemented three-tier project scoping in `retrieve_code_node` and `retrieve_git_context_node`.
+- `app/agents/service.py`: Updated `InvestigationService` to accept optional `knowledge_service`.
+- `app/agents/dependencies.py`: Injected `knowledge_service` into `get_investigation_service`.
+- `app/common/config.py`: Added `project_max_files: int = 500` and `project_max_file_bytes: int = 1_000_000`.
+- `app/api/__init__.py`: Registered `projects_router` in `api_router`.
+- `app/main.py`: Added `close_project_store()` to `lifespan` application shutdown.
+- `tests/test_projects.py`: Comprehensive automated test suite with 28 tests covering all Stage 13 requirements and safety isolation.
+- `docs/PROJECT_JOURNAL.md`: Documented Stage 13 architecture, decisions, and verification.
+
+### Problems Encountered & Resolutions
+- **Circular Import Between Projects and Knowledge Packages**:
+  - *Observation*: Initial test collection failed with `ImportError: cannot import name 'ProjectKnowledgeService' from partially initialized module 'app.knowledge.service'`.
+  - *Root Cause*: `app.knowledge.service` imported `SqliteProjectStore` from `app.projects.storage` (which triggered `app.projects.__init__`), while `app.projects.service` imported `ProjectKnowledgeService` from `app.knowledge.service`.
+  - *Resolution*: Used `from __future__ import annotations` and placed `ProjectKnowledgeService` import under `if TYPE_CHECKING:` in `app/projects/service.py`, cleanly resolving the circular import without runtime penalties.
+- **Windows Case-Folding Workspace Normalization**:
+  - *Observation*: Needed to guarantee that differing casing of Windows workspace paths (e.g. `C:\Projects\Alpha` vs `c:\projects\alpha`) would be recognized as the exact same repository.
+  - *Resolution*: Implemented `normalized_path = os.path.normcase(os.path.normpath(str(resolved)))` and enforced `UNIQUE(normalized_path)` in SQLite schema and `SqliteProjectStore.create_project`. Verified with automated test `test_duplicate_workspace_path_returns_409_including_case_variation`.
+- **Fatal Reindex Preservation**:
+  - *Observation*: If an indexed project's reindex operation fails due to workspace I/O or filesystem errors, the previously good in-memory `CodeIndex` must remain available for incoming queries.
+  - *Resolution*: In `reindex_project()`, performed scanning and parsing into temporary variables before touching `self._project_indexes`. If scanning fails for an already `READY` project, the previous index remains untouched in memory, status remains `READY`, and the error is recorded in `last_index_error`. Verified in `test_fatal_reindex_preserves_previous_good_index`.
+- **Git Working-Tree and Configuration Snapshot Index Version Staleness**:
+  - *Observation*: During manual verification, adding or modifying uncommitted Python files or discovered configuration files (e.g. `pyproject.toml`) updated served knowledge and `last_indexed_at` after reindex/restart, but `index_version` remained static if Git HEAD had not changed. This violated the invariant that `index_version` reflects the actual snapshot being served.
+  - *Resolution*: Updated `_compute_index_version` to hash:
+    1. Git HEAD prefix (for Git-backed projects);
+    2. Deterministic sorted indexed Python code chunks (relative path, lines, symbol, content);
+    3. Deterministic sorted discovered configuration manifests (relative path, file name, size bytes, and content hash).
+    Formatted as `f"v1-{head_prefix}-{content_hash}"` (or `f"v1-{content_hash}"` for non-Git projects). This ensures uncommitted working-tree modifications, configuration additions/removals/edits, and HEAD movements all produce distinct, deterministic snapshot versions without using volatile timestamps or mtimes.
+- **SQLite Storage Persistence Defect and Test Isolation Failure**:
+  - *Observation*: During manual verification, projects registered prior to server restart disappeared from `runtime/sentinelops.db` (`COUNT=0`).
+  - *Confirmed Root Cause*: The manual Alpha/Beta project registrations disappeared because Stage 13 automated test suites were using the production/default project database at `runtime/sentinelops.db`. The `tests/test_projects.py` autouse cleanup fixture called `reset_project_state() -> SqliteProjectStore.clear() -> DELETE FROM projects;` against that shared database whenever tests were run. This test isolation failure was the confirmed reason the manually registered projects were deleted. Pre-fix `create_project()` and `update_project()` already explicitly committed successful writes, and normal SentinelOps startup/shutdown did not call `reset_project_state()` and never executed `DELETE FROM projects`.
+  - *Durability & Concurrency Hardening*: In addition to isolating test state, multiple durability and concurrency hardening improvements were implemented:
+    1. Absolute SQLite path normalization (`self._db_path = str(Path(db_path).resolve())`);
+    2. `threading.RLock` synchronization across all store methods;
+    3. Explicit transaction rollback on write failures;
+    4. Clean project-store lifecycle closure via `close_project_store()` hooked into `app/main.py` `lifespan` application shutdown;
+    5. Clean WAL checkpointing (`PRAGMA wal_checkpoint(PASSIVE);`) on shutdown.
+  - *Resolution & Verification*: Stage 13 tests were updated to use an isolated temporary project database (`tmp_path / "sentinelops_test.db"`) via `set_custom_project_db_path()`, backed by a dedicated safety regression assertion preventing tests from ever binding to `runtime/sentinelops.db`. Empirical verification confirmed that a production marker inserted into `runtime/sentinelops.db` survived both the Stage 13 focused suite and the full 273-test regression suite untouched. Real server shutdown/restart was manually verified to preserve Alpha/Beta registrations durably.
+
+### Verification
+- **Automated Verification**:
+  - Executed `python -m pytest tests/test_projects.py -v`: all 28 tests passed in 4.97s.
+  - Executed full project regression suite `python -m pytest -v`: all 273 tests passed in 49.75s with 100% pass rate (245 baseline tests across Stages 0–12 + 28 Stage 13 tests; zero regressions; zero warnings).
+  - Verified path validation (nonexistent, file, root drive).
+  - Verified duplicate project ID and duplicate workspace path (including Windows case-folding).
+  - Verified Git vs non-Git project lifecycle and metadata.
+  - Verified scanner exclusions, deterministic caps, max file size, and external symlink skipping.
+  - Verified SQLite persistence across store re-instantiations and full store destruction/recreation.
+  - Verified lazy hydration upon restart syncing in-memory indices and SQLite metadata.
+  - Verified multi-project search isolation between Project A and Project B.
+  - Verified reindexing updates and fatal reindex preservation of previous good index.
+  - Verified working-tree changes without commit update `index_version` on reindex and restart.
+  - Verified deterministic versioning on unchanged repositories.
+  - Verified Git HEAD changes update `index_version`.
+  - Verified adding, modifying, and removing configuration files updates `index_version`.
+  - Verified three-tier investigation scoping: onboarded project isolated retrieval, explicit un-onboarded project non-fallback, and legacy incident backward compatibility.
+  - Verified incident `project_id` propagation from Watcher telemetry and `None` -> `"default"` normalization.
+  - Verified legacy `/repository/status` and `/repository/search` compatibility.
+  - Verified durable registration and updates across independent connection lifecycles.
+  - Verified API and service recreation across process shutdown simulation.
+  - Verified test DB isolation ensures automated tests never bind to or mutate live `runtime/sentinelops.db`.
+
+- **Manual Verification**:
+  - Project onboarding and durable SQLite persistence verified across real server restart.
+  - Git-backed and non-Git projects verified.
+  - Project-scoped CodeIndex isolation verified with Alpha/Beta repositories.
+  - Windows case-insensitive duplicate workspace detection verified.
+  - Lazy hydration after restart verified.
+  - Deterministic composite `index_version` verified:
+    - Git HEAD identity;
+    - indexed source content;
+    - discovered config manifests.
+  - Uncommitted Git working-tree changes verified to advance the knowledge hash while keeping HEAD prefix unchanged.
+  - Deleted source disappears after successful reindex.
+  - First-class `Incident.project_id` verified.
+  - Onboarded Alpha investigation uses only Alpha source/Git context.
+  - Explicit unknown project returns empty code/Git context with no legacy fallback.
+  - Failed READY reindex verified:
+    - HTTP 422;
+    - READY preserved;
+    - prior `index_version` preserved;
+    - prior `last_indexed_at` preserved;
+    - `last_index_error` populated;
+    - previous in-memory CodeIndex remains searchable;
+    - successful recovery clears `last_index_error`.
+  - Test DB isolation verified so Stage 13 tests no longer mutate `runtime/sentinelops.db`.
+
+### Known Limitations & Architectural Notes
+- Workspace file watching / automated real-time filesystem change triggers remain deferred to future stages (reindexing is currently triggered via API endpoint `POST /projects/{project_id}/reindex`).
+- Multi-node distributed caching of in-memory code indices remains deferred to future hardening stages.
+- Investigation reporting and automated remediation continue to leverage project-scoped context provided by `ProjectKnowledgeService`.
+
+### User Approval
+Approved
 

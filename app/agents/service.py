@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 import logging
-from typing import Optional
+from typing import Any, Optional
 import uuid
 
 from app.agents.llm import InvestigationLLM
@@ -42,6 +42,7 @@ class InvestigationService:
         git_limit: int = 3,
         max_revisions: int = 1,
         memory_service: Optional[IncidentMemoryService] = None,
+        knowledge_service: Optional[Any] = None,
     ) -> None:
         self._investigation_repository = investigation_repository
         self._incident_service = incident_service
@@ -52,6 +53,7 @@ class InvestigationService:
         self._git_limit = git_limit
         self._max_revisions = max_revisions
         self._memory_service = memory_service
+        self._knowledge_service = knowledge_service
 
     def investigate(self, incident_id: str) -> Investigation:
         """Runs the LangGraph investigation workflow for an existing incident.
@@ -95,6 +97,7 @@ class InvestigationService:
             git_limit=self._git_limit,
             max_revisions=self._max_revisions,
             memory_service=self._memory_service,
+            knowledge_service=self._knowledge_service,
         )
 
         initial_state: InvestigationState = {

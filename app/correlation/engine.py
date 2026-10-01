@@ -440,6 +440,7 @@ class CorrelationEngine:
             severity=match.severity,
             service=event.service,
             environment=event.environment,
+            project_id=event.project_id,
         )
         created_incident = self._incident_service.create_incident(req)
 
@@ -655,6 +656,7 @@ class CorrelationEngine:
             severity=match.severity,
             service=event.service,
             environment=event.environment,
+            project_id=event.project_id,
         )
         created_incident = self._incident_service.create_incident(req)
         ev_type = (
