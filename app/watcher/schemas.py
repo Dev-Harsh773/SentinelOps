@@ -88,6 +88,7 @@ class WatcherStatusResponse(BaseModel):
     buffer: Dict[str, int]
     storage: Dict[str, Any]
     collectors: Dict[str, CollectorHealthResponse]
+    detection: Optional[Dict[str, int]] = None
 
 
 class IngestResponse(BaseModel):

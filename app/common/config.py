@@ -47,6 +47,7 @@ class AppConfig:
     watcher_default_project_id: str
     watcher_default_service: str
     watcher_default_environment: str
+    detection_enabled: bool
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -86,6 +87,7 @@ class AppConfig:
             watcher_default_project_id=os.getenv("WATCHER_DEFAULT_PROJECT_ID", "sentinelops-demo"),
             watcher_default_service=os.getenv("WATCHER_DEFAULT_SERVICE", "demo-app"),
             watcher_default_environment=os.getenv("WATCHER_DEFAULT_ENVIRONMENT", "development"),
+            detection_enabled=os.getenv("DETECTION_ENABLED", "true").lower() in ("true", "1", "yes"),
         )
 
 

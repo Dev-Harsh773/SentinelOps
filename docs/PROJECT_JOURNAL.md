@@ -928,4 +928,84 @@ Strict adherence to decoupled domain boundaries, simple stdlib data structures (
 ### User Approval
 Approved
 
+---
+
+## Stage 11 — Detection Rules + Automatic Incident Creation
+
+### Objective
+Implement deterministic telemetry evaluation on top of the Sentinel Watcher subsystem (Stage 10) to automatically evaluate incoming normalized `TelemetryEvent` streams, detect failure conditions using explicit priority-ordered rules, create incidents via `IncidentService.create_incident()`, attach the triggering telemetry as `Evidence` via `EvidenceRepository`, and enforce duplicate suppression across the running process lifetime using a project-aware composite fingerprint (`project_id | service | environment | rule_id | failure_signature`).
+
+### Design Decisions
+- **Deterministic Single-Event Evaluation**: Evaluates incoming `TelemetryEvent` instances against rules in strict priority order with deterministic first-match selection:
+  1. Priority 1 (`HealthCheckFailureRule`): Matches `SignalType.HEALTH` with `level="ERROR"` and `event_type="health_check_failed"`. Failure signature: `failure_type|endpoint`. Severity: `HIGH`.
+  2. Priority 2 (`AppErrorRule`): Matches `SignalType.LOG` with `level="ERROR"`. Supports all application ERROR logs, with or without unhandled exceptions (Correction 2). Failure signature: `exception_type or event_type|endpoint`. Severity: `HIGH`.
+  3. Priority 3 (`Http5xxRule`): Matches `status_code >= 500` with `SignalType.LOG` or `SignalType.CUSTOM` when `level != "ERROR"`, ensuring mutual exclusivity with `AppErrorRule`. Failure signature: `status_code|endpoint`. Severity: `HIGH`.
+- **Project-Aware Duplicate Suppression (Correction 1)**: Composite fingerprint strictly encodes `project_id`:
+  `fingerprint = f"{event.project_id}|{event.service}|{event.environment}|{match.rule_id}|{match.failure_signature}"`
+  Guarantees incidents are never suppressed across different project IDs even if service, environment, and error signatures match.
+- **Incident Lifecycle Alignment & Recurrence**:
+  - If an active incident for the fingerprint has status `OPEN` or `INVESTIGATING`, subsequent matching events are suppressed (`action=DetectionAction.SUPPRESSED`), incrementing `suppressions_count` without creating duplicate incidents or evidence spam.
+  - If an incident has transitioned to `RESOLVED` or `CLOSED`, the fingerprint is cleared and subsequent failure occurrences create a fresh `OPEN` incident.
+- **Single Canonical Evaluation Point in WatcherService (Correction 3)**:
+  - Evaluation occurs exclusively inside `WatcherService.ingest_event()` after the event is committed to the rolling buffer and SQLite store.
+  - `WatcherService.ingest_batch()` delegates each event to `await self.ingest_event(event)`, guaranteeing at-most-once evaluation per event across all ingestion vectors.
+- **Evidence Attachment & Typing**:
+  - Triggering telemetry is attached as `Evidence` using `EvidenceRepository.create()`.
+  - Health events create `EvidenceType.HEALTH_CHECK`; log events create `EvidenceType.RUNTIME_LOG`.
+  - `request_id` preserves `event.request_id` or remains `None` without fabricating synthetic identifiers.
+  - Contextual metadata (`triggering_event_id`, `project_id`, `rule_id`, and raw metadata) is preserved in `evidence.metadata`.
+- **Failure Isolation**:
+  - Detection evaluation exceptions are caught and logged inside `WatcherService.ingest_event()`. A failure in detection never crashes Watcher or blocks buffer/storage ingestion.
+- **Centralized Configuration & Metrics**:
+  - `DETECTION_ENABLED` toggle (`config.detection_enabled`, default `True`) allows disabling detection without affecting telemetry observation.
+  - Diagnostic metrics (`evaluations_count`, `matches_count`, `incidents_created_count`, `suppressions_count`, `errors_count`, `active_fingerprints_count`) are exposed in `WatcherStatusResponse`.
+
+### Changes Made
+- `app/common/config.py`: Added `detection_enabled: bool` (`DETECTION_ENABLED`, default `True`).
+- `app/telemetry/models.py`: Added `HEALTH_CHECK = "health_check"` to `EvidenceType`, made `request_id: Optional[str] = None` on `Evidence`, and updated `fingerprint()` to handle optional request IDs.
+- `app/telemetry/schemas.py`: Made `request_id: Optional[str] = None` on `EvidenceResponse`.
+- `app/detection/models.py`: Created domain models `DetectionAction` (`INCIDENT_CREATED`, `SUPPRESSED`, `NO_MATCH`), `RuleMatch`, and `DetectionResult`.
+- `app/detection/rules.py`: Implemented `DetectionRule` abstract base class and deterministic rules `HealthCheckFailureRule`, `AppErrorRule`, and `Http5xxRule`.
+- `app/detection/engine.py`: Implemented `DetectionEngine` with rule evaluation, project-aware suppression, incident creation, evidence attachment, and diagnostic counters.
+- `app/detection/dependencies.py`: Created FastAPI dependency injection providers and state reset utilities for `DetectionEngine`.
+- `app/detection/__init__.py`: Exported detection domain and engine interfaces.
+- `app/watcher/schemas.py`: Added optional `detection` metrics field to `WatcherStatusResponse`.
+- `app/watcher/service.py`: Integrated `DetectionEngine` into `WatcherService.__init__`, `ingest_event`, `ingest_batch`, and `get_status`.
+- `app/watcher/dependencies.py`: Wired `get_detection_engine()` into `WatcherService` provider and linked `reset_detection_state()` to `reset_watcher_state()`.
+- `tests/test_detection.py`: Created 13 comprehensive unit and integration tests covering rule matching, generic ERROR logs, rule precedence, project-aware suppression, recurrence after resolution, evidence typing, canonical batch evaluation, failure isolation, config toggling, and collector-to-incident flows.
+- `docs/PROJECT_JOURNAL.md`: Added Stage 11 implementation documentation.
+
+### Verification
+- **Automated Verification**:
+  - Executed `python -m pytest tests/test_detection.py -v`: all 13 tests passed in 3.55s.
+  - Executed full project regression suite `python -m pytest -v`: all 224 tests passed in 35.51s with 100% pass rate (211 baseline tests across Stages 0–10 + 13 new Stage 11 tests; zero regressions).
+- **Manual Verification (Completed & Approved)**:
+  - Watcher detection diagnostics are operational and reported `errors_count=0`.
+  - Normal INFO telemetry is ingested and stored without creating an incident.
+  - Generic application `LOG + ERROR` telemetry automatically creates an `OPEN` incident even without `exception_type` or HTTP status.
+  - Automatically created incidents are immediately visible through the canonical `/incidents` API.
+  - Triggering runtime telemetry is immediately available through the canonical incident Evidence API (`/incidents/{incident_id}/evidence`).
+  - Runtime application evidence correctly uses `EvidenceType.RUNTIME_LOG`.
+  - Health-check evidence correctly uses `EvidenceType.HEALTH_CHECK`.
+  - Real request IDs are preserved when present.
+  - Health telemetry without request context correctly preserves `request_id=null`; no synthetic request IDs are fabricated.
+  - Evidence metadata preserves `triggering_event_id`, `project_id`, and `rule_id`.
+  - Repeated identical failures while an incident is `OPEN` are suppressed.
+  - Suppressed telemetry does not create unlimited duplicate evidence.
+  - `suppressions_count` increases correctly without increasing `incidents_created_count`.
+  - Identical failures from different `project_id` values create separate incidents, proving project-aware suppression.
+  - A real demo `OrderProcessingError` flowing through JSONL automatically creates an incident.
+  - Health-check failures automatically create health incidents.
+  - Repeated health-check failures do not create incident spam.
+  - Health collector recovers when the monitored application returns to healthy.
+  - After an automatically created incident is transitioned to `RESOLVED`, the same failure fingerprint creates a fresh `OPEN` incident with a new incident ID.
+
+### Known Limitations & Architectural Notes
+- Duplicate suppression is process-lifetime only because incidents and suppression state are currently in memory; restarting SentinelOps resets active fingerprints.
+- Cross-signal incident correlation remains deferred to Stage 12: a single failed demo request currently produces both an application-error incident from the structured exception log and an HTTP 500 incident from the request-completion telemetry. These are distinct normalized signals whose cross-signal recognition and grouping belong to Stage 12 — Correlation + Rolling Evidence Windows.
+- Does not send external notifications (Slack, Webhooks, PagerDuty; deferred to Stage 12).
+
+### User Approval
+Approved
+
 

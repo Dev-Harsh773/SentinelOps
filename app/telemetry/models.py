@@ -10,6 +10,7 @@ class EvidenceType(str, Enum):
     """Classification of collected evidence."""
 
     RUNTIME_LOG = "runtime_log"
+    HEALTH_CHECK = "health_check"
 
 
 @dataclass
@@ -22,13 +23,13 @@ class Evidence:
     source: str
     timestamp: datetime
     service: str
-    request_id: str
     level: str
     event: str
     message: str
     endpoint: Optional[str]
     exception_type: Optional[str]
     created_at: datetime
+    request_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def fingerprint(self) -> str:
@@ -39,4 +40,6 @@ class Evidence:
         """
         ts_iso = self.timestamp.isoformat()
         exc_str = self.exception_type or ""
-        return f"{self.incident_id}|{self.source}|{self.request_id}|{self.event}|{ts_iso}|{exc_str}"
+        req_str = self.request_id or ""
+        return f"{self.incident_id}|{self.source}|{req_str}|{self.event}|{ts_iso}|{exc_str}"
+

@@ -2,6 +2,7 @@
 
 from typing import Optional
 from app.common.config import config
+from app.detection.dependencies import get_detection_engine, reset_detection_state
 from app.watcher.buffer import RollingTelemetryBuffer
 from app.watcher.collectors.file_collector import JsonlFileCollector
 from app.watcher.collectors.health_collector import HealthCheckCollector
@@ -53,10 +54,12 @@ def get_watcher_service() -> WatcherService:
             probe_interval_seconds=config.watcher_health_check_interval_seconds,
         )
 
+        detection_engine = get_detection_engine()
         _service_instance = WatcherService(
             buffer=buffer,
             storage=storage,
             collectors=[file_collector, health_collector],
+            detection_engine=detection_engine,
             retention_hours=config.watcher_db_retention_hours,
             max_storage_events=config.watcher_db_max_events,
         )
@@ -65,7 +68,7 @@ def get_watcher_service() -> WatcherService:
 
 
 def reset_watcher_state() -> None:
-    """Reset Watcher singletons for test isolation."""
+    """Reset Watcher and Detection singletons for test isolation."""
     global _buffer_instance, _storage_instance, _service_instance
     if _buffer_instance:
         _buffer_instance.clear()
@@ -76,3 +79,4 @@ def reset_watcher_state() -> None:
     _storage_instance = None
 
     _service_instance = None
+    reset_detection_state()

@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.common.config import config
 from app.watcher.buffer import RollingTelemetryBuffer
@@ -24,6 +24,7 @@ class WatcherService:
         buffer: RollingTelemetryBuffer,
         storage: SqliteTelemetryStore,
         collectors: Optional[List[TelemetryCollector]] = None,
+        detection_engine: Optional[Any] = None,
         retention_hours: int = 24,
         max_storage_events: int = 10000,
     ) -> None:
@@ -34,12 +35,17 @@ class WatcherService:
             for c in collectors:
                 self._collectors[c.name] = c
 
+        self._detection_engine = detection_engine
         self._retention_hours = retention_hours
         self._max_storage_events = max_storage_events
 
         self._start_time: Optional[float] = None
         self._is_running: bool = False
         self._total_ingested: int = 0
+
+    @property
+    def detection_engine(self) -> Optional[Any]:
+        return self._detection_engine
 
     @property
     def is_running(self) -> bool:
@@ -87,26 +93,32 @@ class WatcherService:
             logger.warning("Error pruning storage during Watcher shutdown: %s", exc)
 
     async def ingest_event(self, event: TelemetryEvent) -> None:
-        """Ingest a validated TelemetryEvent into both rolling buffer and local SQLite store."""
+        """Ingest a validated TelemetryEvent into rolling buffer, SQLite store, and evaluate detection rules."""
         self._buffer.append(event)
         try:
             self._storage.save(event)
         except Exception as exc:
             logger.error("Error saving event %s to SQLite storage: %s", event.event_id, exc)
 
+        if self._detection_engine is not None:
+            try:
+                res = self._detection_engine.evaluate(event)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception as exc:
+                logger.error(
+                    "Error evaluating detection rules for event %s: %s",
+                    event.event_id,
+                    exc,
+                    exc_info=True,
+                )
+
         self._total_ingested += 1
 
     async def ingest_batch(self, events: List[TelemetryEvent]) -> None:
-        """Ingest multiple validated TelemetryEvents."""
+        """Ingest multiple validated TelemetryEvents by delegating to ingest_event."""
         for event in events:
-            self._buffer.append(event)
-
-        try:
-            self._storage.save_batch(events)
-        except Exception as exc:
-            logger.error("Error saving batch of %d events to SQLite storage: %s", len(events), exc)
-
-        self._total_ingested += len(events)
+            await self.ingest_event(event)
 
     def get_status(self) -> WatcherStatusResponse:
         """Return diagnostic health and operational metrics for the Watcher subsystem."""
@@ -142,6 +154,10 @@ class WatcherService:
         except Exception:
             pass
 
+        detection_metrics = None
+        if self._detection_engine is not None and hasattr(self._detection_engine, "get_metrics"):
+            detection_metrics = self._detection_engine.get_metrics()
+
         return WatcherStatusResponse(
             watcher_status=status,
             enabled=config.watcher_enabled,
@@ -155,6 +171,7 @@ class WatcherService:
                 "db_path": self._storage.db_path,
             },
             collectors=collectors_health,
+            detection=detection_metrics,
         )
 
     def get_events(

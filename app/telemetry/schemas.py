@@ -32,7 +32,7 @@ class EvidenceResponse(BaseModel):
     source: str
     timestamp: datetime
     service: str
-    request_id: str
+    request_id: Optional[str] = None
     level: str
     event: str
     message: str
