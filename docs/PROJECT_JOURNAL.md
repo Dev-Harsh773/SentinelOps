@@ -1008,4 +1008,109 @@ Implement deterministic telemetry evaluation on top of the Sentinel Watcher subs
 ### User Approval
 Approved
 
+---
+
+## Stage 12 — Correlation + Rolling Evidence Windows
+
+### Objective
+Implement deterministic telemetry correlation and rolling evidence window capture on top of the Sentinel Watcher and Detection subsystems (Stages 10 & 11) to automatically associate related telemetry events into unified incident evidence bundles, ensuring multiple symptoms of the same failure (e.g., application exception log + HTTP 500 completion log) produce a single incident with comprehensive pre- and post-trigger evidence.
+
+### Design Decisions
+- **Canonical Single-Path Orchestration (Clarification 1)**:
+  - `WatcherService.ingest_event(event)` appends to the rolling buffer, writes to SQLite, and calls `DetectionEngine.evaluate(event)` exactly once.
+  - `DetectionEngine.evaluate(event)` evaluates deterministic detection rules exactly once, obtains `Optional[RuleMatch]`, and calls `CorrelationEngine.observe(event, match)` exactly once, returning the resulting `DetectionResult`.
+  - `WatcherService` does not separately invoke `CorrelationEngine`. Batch ingestion delegates each event to `ingest_event()`, ensuring strict at-most-once evaluation across all ingestion vectors.
+- **Dual-Key Strong Indexing (Clarification 4)**:
+  - When an event contains both `request_id` and `trace_id`, `CorrelationEngine` registers both strong lookup keys:
+    - `(project_id, service, environment, request_id)` $\to$ `correlation_id`
+    - `(project_id, service, environment, trace_id)` $\to$ `correlation_id`
+  - Subsequent events sharing either identifier successfully discover and correlate into the existing active incident.
+- **Anchored Fallback Correlation (Clarification 3)**:
+  - Fallback correlation (used only when both `request_id` and `trace_id` are absent) compares candidate telemetry occurrence time against the non-sliding `anchor_event_timestamp` of the original triggering event:
+    $$\left|\text{event.timestamp} - \text{anchor\_event\_timestamp}\right| \le \text{CORRELATION\_FALLBACK\_WINDOW\_SECONDS (10.0s)}$$
+  - Requiring matching `endpoint` and anchoring to the original trigger timestamp prevents "event chaining" where a continuous trickle of minor events could keep an incident open indefinitely.
+- **Process-Time Post-Trigger Active Collection Window (Clarification 3)**:
+  - When an incident is created, the active correlation collection window expiration is calculated from current process observation time:
+    $$\text{expires\_at} = \text{current\_UTC\_process\_time} + \text{CORRELATION\_POST\_WINDOW\_SECONDS (30.0s)}$$
+  - Expiration is intentionally decoupled from `event.timestamp` so that backdated or delayed telemetry receives a full 30-second collection window in real process time.
+- **Normal/INFO Telemetry Attachment (Clarification 1)**:
+  - Normal (non-abnormal) telemetry can never create an incident.
+  - A normal event attaches as contextual evidence only when it strongly correlates (matching `request_id` or `trace_id`) to an already-active incident during its post-trigger collection window.
+- **Total Evidence Cap & Trigger Preservation (Clarification 2 & Additional Clarification)**:
+  - The primary triggering event is always preserved in reserved evidence Slot 1.
+  - Total evidence per incident is strictly hard-capped (`CORRELATION_MAX_EVIDENCE_PER_INCIDENT = 20`).
+  - Pre-window buffer harvesting is capped at `max_evidence - 1 = 19` slots, preventing pre-trigger logs from crowding out the trigger or post-trigger signals.
+  - During pre-window harvesting, `candidate.event_id == triggering_event.event_id` is explicitly excluded to prevent duplicate attachment of the trigger already stored in the buffer.
+- **Lifecycle Alignment & Recurrence**:
+  - Events correlating to incidents in `OPEN` or `INVESTIGATING` status attach as correlated evidence or suppress duplicates.
+  - When an incident is transitioned to `RESOLVED` or `CLOSED`, its active correlation record is invalidated immediately, allowing subsequent failure recurrence to create a fresh `OPEN` incident.
+- **Process-Lifetime Boundaries & Restart Semantics**:
+  - `SqliteTelemetryStore` persists telemetry durably across restarts.
+  - In-memory `IncidentRepository`, `EvidenceRepository`, active correlation indices, and duplicate suppression tables are process-lifetime only and reset upon SentinelOps restart.
+- **Scoped Suppression Fingerprints (Discovered & Corrected in Verification)**:
+  - When an event is evaluated for duplicate suppression (both for active correlation tracking and fallback duplicate suppression), the suppression fingerprint is scoped by strong transaction identifiers:
+    - If `event.request_id` exists: `f"{project_id}|{service}|{environment}|{request_id}|{rule_id}|{failure_signature}"`
+    - Else if `event.trace_id` exists: `f"{project_id}|{service}|{environment}|{trace_id}|{rule_id}|{failure_signature}"`
+    - Else (legacy no-ID fallback): `f"{project_id}|{service}|{environment}|{rule_id}|{failure_signature}"`
+  - Guarantees abnormal events originating from different requests or distributed traces with otherwise identical failure characteristics produce separate incidents, while duplicate emissions within the same request/trace or uninstrumented background probes are suppressed into a single incident.
+
+### Changes Made
+- `app/telemetry/models.py`: Added optional `trace_id: Optional[str] = None` to `Evidence` and updated `Evidence.fingerprint()`.
+- `app/telemetry/schemas.py`: Added optional `trace_id: Optional[str] = None` to `EvidenceResponse`.
+- `app/common/config.py`: Added `correlation_enabled: bool`, `correlation_pre_window_seconds: float` (60.0), `correlation_post_window_seconds: float` (30.0), `correlation_fallback_window_seconds: float` (10.0), and `correlation_max_evidence_per_incident: int` (20).
+- `app/watcher/buffer.py`: Added optional query filter arguments to `get_recent()`: `request_id`, `trace_id`, `endpoint`, `start_time`, `end_time`.
+- `app/detection/models.py`: Added `CORRELATED = "correlated"` to `DetectionAction` enum.
+- `app/correlation/models.py`: Created `ActiveIncidentCorrelation` and `CorrelationType`.
+- `app/correlation/engine.py`: Implemented `CorrelationEngine` with dual-key strong indexing, anchored fallback, pre/post window harvesting, total evidence capping, scoped duplicate suppression (`_compute_suppression_fingerprint`), and failure isolation.
+- `app/correlation/dependencies.py`: Created dependency injection provider `get_correlation_engine()` and test state resetter `reset_correlation_state()`.
+- `app/correlation/__init__.py`: Package exports.
+- `app/detection/engine.py`: Refactored to delegate match routing and observation to `CorrelationEngine`.
+- `app/detection/dependencies.py`: Injected `get_correlation_engine()` into `DetectionEngine`.
+- `app/watcher/dependencies.py`: Added `reset_correlation_state()` to `reset_watcher_state()`.
+- `tests/test_correlation.py`: Created 21 comprehensive unit, integration, scoped suppression, and failure isolation tests.
+- `docs/PROJECT_JOURNAL.md`: Added Stage 12 documentation and verification closeout.
+
+### Problems Encountered & Resolutions
+- **Request-Isolation Defect in Manual Verification**:
+  - *Observation*: During manual verification, two abnormal events with identical `(project_id, service, environment, endpoint, event_type, exception_type, rule_id)` but differing `request_id` values (`final-req-A` vs `final-req-B`) collapsed into a single incident instead of producing 2 separate incidents.
+  - *Root Cause*: Stage 11 legacy suppression fingerprint calculation omitted `request_id`/`trace_id` when strong correlation lookup failed. After strong correlation rejected the second event due to mismatched `request_id`, execution dropped into fallback suppression against `_active_fingerprints`. Because the suppression fingerprint omitted `request_id`, Event B generated the identical fingerprint to Event A and was erroneously suppressed against Event A's open incident.
+  - *Resolution*: Implemented `CorrelationEngine._compute_suppression_fingerprint(event, match)` to scope suppression fingerprints by `request_id`, then `trace_id`, falling back to un-scoped only when neither identifier is present. Updated `_observe_abnormal_telemetry` and `_observe_without_correlation` to use this scoped helper. Added comprehensive test coverage in `tests/test_correlation.py`.
+
+### Verification
+- **Automated Verification**:
+  - Executed `python -m pytest tests/test_correlation.py -v`: all 21 tests passed in 0.41s.
+  - Executed `python -m pytest tests/test_detection.py -v`: all 13 tests passed in 3.46s.
+  - Executed full project regression suite `python -m pytest -v`: all 245 tests passed in 38.14s with 100% pass rate (224 baseline tests across Stages 0–11 + 21 new Stage 12 tests; zero regressions).
+- **Manual Verification (Completed & Approved)**:
+  - A real failed `/orders` request now produces exactly one incident instead of separate AppError and HTTP 500 incidents.
+  - The same incident contains:
+    - the application exception trigger;
+    - pre-trigger INFO request context;
+    - the HTTP 500 completion signal as correlated post-trigger evidence.
+  - Trigger evidence is stored exactly once.
+  - Pre-trigger INFO telemetry sharing the same request_id is captured.
+  - Post-trigger INFO telemetry sharing the same request_id attaches to the active incident and does not create a new incident.
+  - Unrelated normal INFO telemetry creates no incident.
+  - Different request_id values with otherwise identical failure characteristics create separate incidents.
+  - Repeated identical failures with the same request_id are suppressed into one incident.
+  - Cross-project isolation works even when request_id values are identical.
+  - Endpoint/time fallback correlation without request_id/trace_id produces one incident with multiple evidence items.
+  - Evidence count is correctly capped at 20 total items.
+  - Correlation diagnostics operate correctly.
+  - `errors_count=0`.
+  - After restarting SentinelOps to load the final suppression fix:
+    - different request IDs produced 2 incidents;
+    - the same request ID repeated produced 1 incident;
+    - `suppressions_count` increased as expected.
+
+### Known Limitations & Architectural Notes
+- Active correlation records, suppression fingerprints, in-memory `IncidentRepository`, and `EvidenceRepository` are process-lifetime only; restarting SentinelOps resets active correlation state and active incidents.
+- `SqliteTelemetryStore` persists telemetry durably across restarts.
+- Project onboarding and repository workspace management remain deferred to Stage 13.
+- External notification channels (Slack, Webhooks, PagerDuty) remain deferred to Stage 15.
+- Persistent multi-node/distributed correlation remains deferred to a future hardening stage.
+
+### User Approval
+Approved
+
 

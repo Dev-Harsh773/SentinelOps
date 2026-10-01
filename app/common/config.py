@@ -48,6 +48,11 @@ class AppConfig:
     watcher_default_service: str
     watcher_default_environment: str
     detection_enabled: bool
+    correlation_enabled: bool
+    correlation_pre_window_seconds: float
+    correlation_post_window_seconds: float
+    correlation_fallback_window_seconds: float
+    correlation_max_evidence_per_incident: int
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -88,6 +93,11 @@ class AppConfig:
             watcher_default_service=os.getenv("WATCHER_DEFAULT_SERVICE", "demo-app"),
             watcher_default_environment=os.getenv("WATCHER_DEFAULT_ENVIRONMENT", "development"),
             detection_enabled=os.getenv("DETECTION_ENABLED", "true").lower() in ("true", "1", "yes"),
+            correlation_enabled=os.getenv("CORRELATION_ENABLED", "true").lower() in ("true", "1", "yes"),
+            correlation_pre_window_seconds=float(os.getenv("CORRELATION_PRE_WINDOW_SECONDS", "60.0")),
+            correlation_post_window_seconds=float(os.getenv("CORRELATION_POST_WINDOW_SECONDS", "30.0")),
+            correlation_fallback_window_seconds=float(os.getenv("CORRELATION_FALLBACK_WINDOW_SECONDS", "10.0")),
+            correlation_max_evidence_per_incident=int(os.getenv("CORRELATION_MAX_EVIDENCE_PER_INCIDENT", "20")),
         )
 
 

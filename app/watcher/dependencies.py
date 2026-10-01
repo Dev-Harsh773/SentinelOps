@@ -2,6 +2,7 @@
 
 from typing import Optional
 from app.common.config import config
+from app.correlation.dependencies import reset_correlation_state
 from app.detection.dependencies import get_detection_engine, reset_detection_state
 from app.watcher.buffer import RollingTelemetryBuffer
 from app.watcher.collectors.file_collector import JsonlFileCollector
@@ -80,3 +81,4 @@ def reset_watcher_state() -> None:
 
     _service_instance = None
     reset_detection_state()
+    reset_correlation_state()

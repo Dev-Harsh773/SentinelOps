@@ -12,6 +12,7 @@ class DetectionAction(str, Enum):
     """Action taken by the detection engine following rule evaluation."""
 
     INCIDENT_CREATED = "incident_created"
+    CORRELATED = "correlated"
     SUPPRESSED = "suppressed"
     NO_MATCH = "no_match"
 

@@ -6,6 +6,7 @@ Designed for single-process asyncio execution without blocking I/O during mutati
 """
 
 from collections import deque
+from datetime import datetime
 from typing import List, Optional
 
 from app.watcher.models import SignalType, TelemetryEvent
@@ -43,6 +44,11 @@ class RollingTelemetryBuffer:
         level: Optional[str] = None,
         service: Optional[str] = None,
         project_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
     ) -> List[TelemetryEvent]:
         """Return matching events in reverse chronological order (newest first)."""
         results: List[TelemetryEvent] = []
@@ -57,6 +63,16 @@ class RollingTelemetryBuffer:
             if service and event.service != service:
                 continue
             if project_id and event.project_id != project_id:
+                continue
+            if request_id and event.request_id != request_id:
+                continue
+            if trace_id and event.trace_id != trace_id:
+                continue
+            if endpoint and event.endpoint != endpoint:
+                continue
+            if start_time and event.timestamp < start_time:
+                continue
+            if end_time and event.timestamp > end_time:
                 continue
 
             results.append(event)
