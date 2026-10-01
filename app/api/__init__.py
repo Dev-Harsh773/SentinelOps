@@ -13,6 +13,7 @@ from app.remediation.routes import router as remediation_router
 from app.repository.routes import router as git_router
 from app.retrieval.routes import router as repository_router
 from app.telemetry.routes import router as telemetry_router
+from app.watcher.routes import router as watcher_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -23,3 +24,5 @@ api_router.include_router(git_router)
 api_router.include_router(investigation_router)
 api_router.include_router(memory_router)
 api_router.include_router(remediation_router)
+api_router.include_router(watcher_router)
+

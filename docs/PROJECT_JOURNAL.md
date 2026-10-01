@@ -835,3 +835,97 @@ Establish a secure, auditable human-in-the-loop review approval gate and isolate
 
 ### User Approval
 Approved
+
+---
+
+## Stage 10 — Sentinel Watcher Foundation
+
+### Objective
+Establish the always-on telemetry collection, normalization, in-memory rolling buffering, and durable SQLite local persistence foundation for SentinelOps. Enable continuous monitoring of structured log files (`JsonlFileCollector`), synthetic HTTP service health probes (`HealthCheckCollector`), and canonical push-based external telemetry ingestion (`POST /watcher/events`), while protecting all Stage 0–9 invariants and avoiding premature detection rules or remediation execution.
+
+### Design Decisions
+- **Decoupled Telemetry Stream Domain**:
+  - Introduced `TelemetryEvent` as a frozen, normalized stream dataclass with an explicit `SignalType` classification (`LOG`, `HEALTH`, `METRIC`, `TRACE`, etc.) separate from `event_type`.
+  - Avoided coupling stream telemetry with Stage 3's `Evidence` domain by omitting premature conversion methods.
+- **Active Observer Collectors**:
+  - Implemented `JsonlFileCollector` as a continuous background tailer with explicit startup EOF semantics (seeks to EOF if the file exists to avoid re-reading historical logs upon startup, and handles truncation/rotation gracefully).
+  - Implemented `HealthCheckCollector` using `httpx.AsyncClient` with explicit structured failure typing (`failure_type` preserved in metadata: `connection_refused`, `timeout`, `http_status_failure`, `network_error`).
+  - Completely removed host metrics and Docker collector stubs from Stage 10 scope.
+- **Canonical HTTP Push Ingestion**:
+  - Exposed a single canonical endpoint `POST /watcher/events` accepting single or batch payloads, strictly enforcing explicit non-empty `project_id` and `service` identities (rejecting missing/blank identities with HTTP 422 Unprocessable Entity).
+  - Treated HTTP ingestion as a direct route handler rather than a background collector.
+- **In-Memory Rolling Bounded Buffer**:
+  - Built `RollingTelemetryBuffer` using `collections.deque(maxlen=capacity)` for fast, synchronous, O(1) FIFO eviction upon capacity overflow within the asyncio event loop.
+- **SQLite Local Persistence & Retention**:
+  - Implemented `SqliteTelemetryStore` using standard library `sqlite3` in WAL mode with indexed lookups.
+  - Implemented dual-bounded retention pruning: time-based pruning (`WATCHER_DB_RETENTION_HOURS`, default 24h) and count-based capping (`WATCHER_DB_MAX_EVENTS`, default 10,000 rows).
+- **Watcher Lifecycle & Failure Isolation**:
+  - Integrated `WatcherService` cleanly into FastAPI's `lifespan` context manager in `app/main.py`.
+  - Supervised collector tasks in isolated loops where collector errors never crash the FastAPI backend.
+
+### Files Added / Changed
+- `project.md`: Replaced repository-root source-of-truth roadmap with updated architecture defining Stage 10 as Sentinel Watcher Foundation.
+- `app/common/config.py`: Added configuration attributes for Watcher (`watcher_enabled`, `watcher_log_path`, `watcher_poll_interval_seconds`, `watcher_buffer_capacity`, `watcher_db_path`, `watcher_db_retention_hours`, `watcher_db_max_events`, `watcher_health_check_interval_seconds`, `watcher_health_check_url`, `watcher_default_project_id`, `watcher_default_service`, `watcher_default_environment`).
+- `app/watcher/models.py`: Domain dataclasses and enums (`SignalType`, `CollectorStatus`, `CollectorType`, `WatcherStatus`, `CollectorHealth`, `TelemetryEvent`).
+- `app/watcher/schemas.py`: Pydantic request/response schemas for event push, batching, status reporting, and buffered queries.
+- `app/watcher/buffer.py`: In-memory `RollingTelemetryBuffer` with bounded deque and reverse-chronological filtered queries.
+- `app/watcher/storage.py`: `SqliteTelemetryStore` with table creation, indices, batch saving, and dual-bounded retention pruning.
+- `app/watcher/collectors/base.py`: Abstract `TelemetryCollector` protocol.
+- `app/watcher/collectors/file_collector.py`: Continuous `JsonlFileCollector` with startup EOF seeking and truncation detection.
+- `app/watcher/collectors/health_collector.py`: Synthetic `HealthCheckCollector` with failure categorization.
+- `app/watcher/service.py`: `WatcherService` orchestrating collectors, rolling buffer, storage, and queries.
+- `app/watcher/dependencies.py`: FastAPI DI providers for buffer, storage, and service singletons with reset hooks.
+- `app/watcher/routes.py`: FastAPI endpoints for `POST /watcher/events`, `GET /watcher/status`, and `GET /watcher/events`.
+- `app/watcher/__init__.py`: Public package exports.
+- `app/api/__init__.py`: Registered `watcher_router` with `api_router`.
+- `app/main.py`: Connected `WatcherService` startup and shutdown to application `lifespan`.
+- `app/storage/__init__.py`: Exported `SqliteTelemetryStore`.
+- `.gitignore`: Scoped runtime SQLite exclusions (`runtime/*.db`, `runtime/*.db-wal`, `runtime/*.db-shm`).
+- `tests/test_watcher.py`: 16 comprehensive automated tests covering models, buffer FIFO, SQLite persistence across restart, collectors, and API routes.
+- `docs/PROJECT_JOURNAL.md`: Added Stage 10 implementation entry.
+
+### Problems Encountered
+- **Problem 1 (Startup Telemetry Duplication)**: If `JsonlFileCollector` read from the start of the log file on boot, previously processed historical logs from prior runs would be re-ingested as duplicate new stream events.
+  - *Solution*: Explicitly seek to EOF (`os.path.getsize`) upon startup if the file already exists, setting `_offset` to file size and capturing only newly appended lines.
+- **Problem 2 (External Telemetry Identity Leakage)**: Pushing external telemetry without explicit identity could silently attribute events to the local demo application defaults.
+  - *Solution*: Enforced mandatory `project_id` and `service` validation in `TelemetryEventCreate` schema with string whitespace stripping, raising HTTP 422 Unprocessable Entity if omitted.
+
+### Attempts
+Not applicable; implementation succeeded on first pass according to approved architecture.
+
+### Final Solution
+Created the complete `app/watcher` package, hooked lifecycle into `app/main.py`, added configuration parameters, and wrote 16 focused tests in `tests/test_watcher.py`.
+
+### Why It Worked
+Strict adherence to decoupled domain boundaries, simple stdlib data structures (`collections.deque`, `sqlite3`), and async task isolation ensured zero side effects on Stages 0–9.
+
+### Verification
+- **Automated Verification**:
+  - Executed `python -m pytest tests/test_watcher.py -v`: all 16 tests passed in 1.32s with 100% success.
+  - Executed full project regression suite `python -m pytest -v`: all 211 tests passed in 30.72s with 100% success (195 baseline tests across Stages 0–9 + 16 new Stage 10 tests).
+- **Manual Verification (Completed & Approved)**:
+  - SentinelOps Watcher started successfully and remained operational.
+  - Queried `GET /watcher/status` and confirmed operational health, active collectors, and bounded buffer diagnostics.
+  - Tested external push validation: missing `project_id` on `POST /watcher/events` was predictably rejected with HTTP 422 Unprocessable Entity.
+  - Ingested valid external telemetry and confirmed HTTP 202 Accepted.
+  - Verified ingested events were retrievable through the Watcher API (`GET /watcher/events`).
+  - Verified SQLite persistence across process restart: ingested telemetry survived a complete shutdown and restart of SentinelOps.
+  - Verified `JsonlFileCollector` continuously captured newly appended telemetry without duplicating older historical records.
+  - Verified `HealthCheckCollector` transitioned between healthy and degraded states.
+  - Verified health-check probe failure generated structured `health_check_failed` telemetry preserving the underlying failure classification; the manual verification observed `failure_type="timeout"` with `TimeoutException`.
+  - Verified health collector recovered to healthy state after the monitored application resumed.
+  - Controlled order-processing failure was enabled successfully on demo application.
+  - Confirmed `/orders` returned HTTP 500 while failure mode was active.
+  - Confirmed the resulting `OrderProcessingError` was automatically captured by `JsonlFileCollector`.
+  - Confirmed the error appeared in SentinelOps as a normalized `TelemetryEvent` in real time without manually invoking `/evidence/collect`.
+  - Disabled failure mode and confirmed `/orders` returned HTTP 201, verifying application recovery.
+
+### Known Limitations
+- Does not implement detection rules or automatic incident creation (deferred to Stage 11).
+- Does not correlate signals into incident evidence bundles (deferred to Stage 12).
+- Local collectors configured via environment variables rather than multi-project dynamic registration (deferred to Stage 13).
+
+### User Approval
+Approved
+
+

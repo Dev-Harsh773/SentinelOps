@@ -1,2016 +1,1575 @@
-# SentinelOps — PROJECT.md
+# SentinelOps
 
-## 1. Project Identity
+## 1. Project Status
 
-**Project Name:** SentinelOps  
-**Project Type:** AI-assisted software reliability and incident-response platform  
-**Primary Goal:** Connect a deployed application’s runtime telemetry with its source-code repository, Git history, deployment context, and previous incidents so SentinelOps can detect or receive incidents, investigate them with evidence, propose safe remediations, require human approval before code changes, prepare changes only in isolated Git branches, validate them, and present the result to the developer.
+SentinelOps is complete and manually approved through **Stage 9**.
 
-SentinelOps is **reactive, evidence-grounded, and human-controlled**.
+Current confirmed repository state:
 
-The initial product does **not** attempt to predict future crashes or failures with machine learning. Its first responsibility is to respond correctly and explainably to incidents that have already happened or are currently happening.
+- Active branch: `main`
+- Latest confirmed commit: `1f03a81`
+- `main` and `origin/main` were aligned at that point
+- Full Stage 9 regression: **195 tests passed**
+- Stage 9-specific suite: **30 tests passed**
+- Stage 10 has **not** been implemented
+- The previous Stage 10 direction focused too heavily on automated code patch execution and is now obsolete
 
----
-
-# 2. Product Model
-
-SentinelOps should be experienced by another developer as an **always-running reliability platform**, not as a library that must be deeply embedded into the application being monitored.
-
-A developer connects two primary sources:
-
-```text
-1. Source / Project Context
-   GitHub / GitLab / local or server-side Git repository
-
-2. Runtime / Telemetry Context
-   logs / errors / traces / metrics / deployment events
-```
-
-SentinelOps combines both.
-
-```text
-Source Repository
-      │
-      ▼
-Project Intelligence
-      │
-      ▼
-Project Knowledge Base
-      │
-      ├──────────────┐
-      │              │
-      │              ▼
-      │       Investigation Engine
-      │              ▲
-      │              │
-Runtime Telemetry ───┘
-      │
-      ▼
-Incident Detection / Incident Creation
-```
-
-The developer should not need to keep VS Code open for SentinelOps to function.
-
-VS Code may later become an optional developer interface, but the always-running system must continue working when the developer’s laptop is offline.
+This document replaces the older roadmap and is the current architectural source of truth.
 
 ---
 
-# 3. Target User Experience
+# 2. Product Definition
 
-A future production-style onboarding flow should feel approximately like:
+SentinelOps is an **always-on AI-assisted incident detection, investigation, operational memory, and response platform**.
 
-```text
-Create SentinelOps Project
-        ↓
-Connect Source Repository
-        ↓
-Connect Deployment / Runtime Environment
-        ↓
-Connect Telemetry Source
-        ↓
-Configure Notifications
-        ↓
-Initial Project Intelligence Scan
-        ↓
-Project Ready
-        ↓
-Continuous Monitoring
-```
+Its purpose is to reduce the time between:
 
-Example:
+> “Something broke”
+
+and:
+
+> “The developer understands what happened, why it happened, what evidence supports that conclusion, whether it happened before, and what should be done next.”
+
+SentinelOps continuously monitors deployed applications, detects abnormal behavior, collects and correlates runtime evidence, investigates likely root causes using telemetry + source code + Git history + deployment context + historical incidents, notifies developers, recommends responses, and optionally performs only small bounded actions after policy validation and explicit human approval.
+
+The core product flow is:
 
 ```text
-Repository:
-GitHub → company/payment-service
-
-Deployment:
-Railway / AWS / Vercel / Docker / other
-
-Environment:
-production
-
-Telemetry:
-Railway logs / CloudWatch / OpenTelemetry / HTTP log ingestion / local collector
-
-Notifications:
-Email / Slack / webhook
-
-Status:
-Monitoring
+DETECT
+  ↓
+UNDERSTAND
+  ↓
+EXPLAIN
+  ↓
+REMEMBER
+  ↓
+RECOMMEND
+  ↓
+NOTIFY
+  ↓
+OPTIONALLY EXECUTE SMALL SAFE ACTIONS
 ```
 
-The exact external integrations are future work. The architecture must not assume only one hosting provider.
+SentinelOps is **not**:
+
+```text
+detect problem
+→ let AI freely modify production or source code
+```
 
 ---
 
-# 4. Product Architecture
+# 3. Product Priorities
 
-SentinelOps should evolve into four major layers.
+Priority order:
 
-## 4.1 Integration Layer
+1. Detection
+2. Investigation
+3. Root-cause analysis
+4. Historical incident memory
+5. Recommendation
+6. Notification
+7. Operational reporting
+8. Limited safe actions
 
-Connects SentinelOps to systems owned by the developer.
+Automatic remediation is intentionally a limited feature.
 
-Possible source connectors:
-
-```text
-GitHub
-GitLab
-local Git repository
-server-side checked-out repository
-```
-
-Possible telemetry connectors:
-
-```text
-structured log file
-HTTP ingestion
-Docker logs
-Railway log integration
-AWS CloudWatch
-OpenTelemetry
-webhook/event source
-optional Sentinel Collector Agent
-```
-
-The integration boundary should be language-independent.
-
-A monitored application may be:
-
-```text
-Python
-Java
-JavaScript / TypeScript
-Go
-.NET
-or another language
-```
-
-SentinelOps should not require the application itself to run the AI engine.
+Complex code modification is not the core product identity.
 
 ---
 
-## 4.2 Project + Runtime Intelligence Layer
+# 4. Capability Separation
 
-This layer maintains two types of knowledge.
+Every incident must separate three different questions.
 
-### Project Intelligence
-
-Built from source code, repository metadata, documentation, configuration, and Git history.
-
-It should eventually understand and index:
+## Detection
 
 ```text
-files
-modules
-classes
-functions
-methods
-imports
-API routes
-service boundaries
-configuration files
-dependencies
-call relationships where practical
-deployment files
-Git commits
-recent code changes
-documentation
+Is something wrong?
 ```
 
-### Runtime Intelligence
+Handled primarily by the Sentinel Watcher.
 
-Built from production or staging telemetry.
-
-It should normalize:
+## Diagnosis
 
 ```text
-logs
-errors
-exceptions
-stack traces
-request IDs
-trace IDs
-timestamps
-service names
-endpoints
-severity
-deployment/version metadata
-metrics where supported
+Why is it wrong?
 ```
 
-These two sources are correlated during investigation.
+Handled primarily by the Sentinel Engine.
+
+## Remediation
+
+```text
+What should be done?
+Can SentinelOps safely do it?
+Does a developer need to handle it?
+```
+
+Handled by recommendation logic, safety policy, human approval, and eventually the restricted Action Executor.
+
+These capabilities must remain separate.
 
 ---
 
-## 4.3 SentinelOps Engine
-
-The core engine performs:
+# 5. Core Runtime Architecture
 
 ```text
-incident management
-evidence collection
-code retrieval
+                 COMPANY / USER INFRASTRUCTURE
+
+        ┌────────────────────────────┐
+        │      Application(s)        │
+        │ API / Web / Workers        │
+        └─────────────┬──────────────┘
+                      │ telemetry
+                      ▼
+        ┌────────────────────────────┐
+        │      SENTINEL WATCHER      │
+        │                            │
+        │ collectors                 │
+        │ normalization              │
+        │ health checks              │
+        │ metrics                    │
+        │ logs                       │
+        │ events                     │
+        │ rolling evidence buffer    │
+        │ detection                  │
+        │ correlation                │
+        │ incident trigger           │
+        └─────────────┬──────────────┘
+                      │
+                      ▼
+        ┌────────────────────────────┐
+        │      SENTINEL ENGINE       │
+        │                            │
+        │ incident management        │
+        │ project knowledge          │
+        │ code intelligence          │
+        │ Git intelligence           │
+        │ deployment context         │
+        │ RCA                        │
+        │ historical incident RAG    │
+        │ recommendation             │
+        │ safety classification      │
+        │ reports                    │
+        └─────────────┬──────────────┘
+                      │
+                ┌─────┴─────┐
+                │           │
+                ▼           ▼
+        ┌────────────┐  ┌──────────────┐
+        │ ANDROID    │  │ WINDOWS      │
+        │ MOBILE     │  │ CONTROL      │
+        │            │  │ CENTER       │
+        │ alerts     │  │              │
+        │ summaries  │  │ incidents    │
+        │ approvals  │  │ evidence     │
+        │ status     │  │ logs/metrics │
+        └────────────┘  │ code/Git     │
+                        │ RCA/history   │
+                        └──────────────┘
+```
+
+A future restricted component performs approved write operations:
+
+```text
+Watcher
+READ ONLY
+   ↓
+Engine
+ANALYZE
+   ↓
+Safety Policy
+   ↓
+Human Approval
+   ↓
+Safety Policy Again
+   ↓
+Action Executor
+LIMITED WRITE
+   ↓
+Verification
+   ↓
+Audit
+```
+
+---
+
+# 6. Sentinel Watcher
+
+The Sentinel Watcher is the always-on runtime monitoring component.
+
+It must stay lightweight and should primarily perform deterministic work.
+
+The Watcher must not run a large LLM against every log line or request.
+
+Normal operation should look like:
+
+```text
+large telemetry volume
+        ↓
+cheap deterministic processing
+        ↓
+nothing abnormal
+        ↓
+AI remains idle
+```
+
+Incident operation:
+
+```text
+abnormal signal(s)
+        ↓
+Watcher detects anomaly
+        ↓
+Watcher creates/updates incident context
+        ↓
+Sentinel Engine activates
+```
+
+## Watcher responsibilities
+
+Eventually the Watcher should be able to:
+
+- receive logs
+- receive metrics
+- run health checks
+- watch process/container state
+- observe deployment events
+- maintain recent telemetry
+- calculate rates and durations
+- detect deterministic abnormal conditions
+- deduplicate repeated signals
+- correlate related signals
+- create incident candidates
+- freeze incident evidence windows
+- trigger the Sentinel Engine
+- emit notification events
+- report its own health and capabilities
+
+## Watcher permissions
+
+The Watcher is read-only by default.
+
+Allowed examples:
+
+- read logs
+- read metrics
+- read health state
+- read container/process state
+- read deployment state
+- perform health checks
+
+Not allowed by default:
+
+- cloud administrator privileges
+- unrestricted shell/root mutation
+- Git writes
+- database administration
+- arbitrary infrastructure mutation
+
+---
+
+# 7. Sentinel Engine
+
+The Sentinel Engine is the intelligence layer.
+
+It activates when there is an incident worth investigating.
+
+Conceptual flow:
+
+```text
+Incident
+   ↓
+Runtime evidence
+   ↓
+Project knowledge
+   ↓
+Code retrieval
+   ↓
 Git intelligence
-LangGraph investigation
-root-cause synthesis
-evidence validation
-historical incident retrieval
-remediation proposal
-human approval
-isolated Git branching
-remediation execution
-automated validation
+   ↓
+Deployment context
+   ↓
+Historical incidents
+   ↓
+AI investigation
+   ↓
+Root Cause Analysis
+   ↓
+Recommendation
+   ↓
+Safety classification
 ```
 
-This is the core logic currently being built.
+The Engine should answer:
+
+- What happened?
+- When did it begin?
+- Which service/component was affected?
+- What was the impact?
+- What likely caused it?
+- Which evidence supports the hypothesis?
+- What evidence contradicts it?
+- How confident is the system?
+- Has this happened before?
+- What solved similar incidents previously?
+- What should be done now?
+- Is a safe action available?
+- Does a developer need to handle the issue manually?
 
 ---
 
-## 4.4 Developer Experience Layer
+# 8. Project Understanding / Project Knowledge Base
 
-The developer interacts with SentinelOps through:
+Project understanding is a core component, not optional.
 
-```text
-web dashboard
-notifications
-REST API
-optional CLI
-optional VS Code extension later
-```
+When a repository is connected, SentinelOps should build reusable project intelligence rather than asking an LLM to reread the entire repository during each incident.
 
-The dashboard is the primary control center.
+The project knowledge system should eventually understand:
 
-A future dashboard should show:
+- repositories
+- files and folders
+- symbols
+- functions
+- classes
+- routes/APIs
+- imports
+- dependencies
+- configuration
+- services
+- important code relationships
+- Git history
+- recent commits
+- deployment metadata
+- source index information
 
-```text
-projects
-service health
-active incidents
-live/recent logs
-incident timeline
-runtime evidence
-relevant code
-Git changes
-historical incidents
-RCA
-confidence and uncertainty
-remediation proposal
-human approval
-branch status
-validation results
-```
-
----
-
-# 5. Control Plane and Optional Collector
-
-SentinelOps should support two deployment styles.
-
-## 5.1 Direct Integration
-
-Where a provider exposes suitable APIs/webhooks/log forwarding:
-
-```text
-GitHub ────────────────► SentinelOps
-Railway / AWS logs ───► SentinelOps
-OpenTelemetry ────────► SentinelOps
-```
-
-No local SentinelOps agent is required.
-
-## 5.2 Optional Sentinel Collector Agent
-
-Some environments may benefit from a lightweight local process.
-
-```text
-Application / Host
-      │
-      ▼
-Sentinel Collector
-      │
-      ▼
-SentinelOps Control Plane
-```
-
-The collector may:
-
-```text
-tail logs
-forward structured telemetry
-report service metadata
-report deployed commit/version
-perform lightweight local collection
-```
-
-The collector must **not** contain the full AI investigation engine.
-
-The control plane owns investigation, memory, remediation, approval, dashboard, and notifications.
-
-For serverless environments such as Vercel, a long-running local agent must not be assumed. Provider integrations, log drains, APIs, webhooks, or telemetry export should be supported instead.
-
----
-
-# 6. Project Intelligence / Initial Understanding
-
-Before SentinelOps can reliably investigate arbitrary projects, it needs a machine-readable understanding of the connected codebase.
-
-This is called the **Project Intelligence Layer**.
-
-When a project is connected for the first time, SentinelOps should perform an initial deterministic scan.
+Conceptually:
 
 ```text
 Repository
-    ↓
-Scanner
-    ↓
-Language / Framework Detection
-    ↓
-Parser / Chunker
-    ↓
-Symbol Extraction
-    ↓
-Relationship Extraction
-    ↓
-Git / Config / Documentation Analysis
-    ↓
+   ↓
+Project Understanding
+   ↓
 Project Knowledge Base
+   ↓
+Incident-time retrieval
 ```
-
-The initial scan should prefer deterministic analysis before LLM summarization.
-
-The system must not send an entire large repository to an LLM every time an incident occurs.
-
-Instead:
-
-```text
-initial onboarding
-    → build reusable project knowledge
-
-incident investigation
-    → retrieve only relevant project context
-```
-
-Possible project-knowledge entries include:
-
-```text
-file path
-symbol name
-symbol type
-line range
-code chunk
-module/service
-API route
-imports
-call relationships
-configuration references
-external dependency references
-Git history
-last indexed commit
-```
-
-LLMs may enrich interpretation, but deterministic source references remain authoritative.
-
----
-
-# 7. Incremental Project Updates
-
-Project understanding must not become stale.
-
-After the initial full index, SentinelOps should prefer **incremental updates**.
 
 Example:
 
 ```text
-GitHub Push
-    ↓
-Changed files detected
-    ↓
-Re-index changed files
-    ↓
-Remove stale symbols/chunks
-    ↓
-Update project relationships
-    ↓
-Record new indexed commit
+OrderProcessingError
+/orders
+       ↓
+locate:
+- route
+- handler/controller
+- service
+- exception definition
+- dependencies
+- related recent commits
 ```
 
-A full repository rescan should not be required after every commit.
-
-The project knowledge base should expose which commit/version it currently represents.
+After initial indexing, changed files should be incrementally re-indexed rather than rebuilding everything.
 
 ---
 
-# 8. Continuous Runtime Monitoring
+# 9. Operational Evidence
 
-Continuous monitoring must not mean continuously sending every log line to an LLM.
+SentinelOps is not limited to logs.
 
-Preferred flow:
+The long-term evidence model includes:
 
-```text
-Telemetry Stream
-      ↓
-Deterministic normalization
-      ↓
-Rules / thresholds / correlation / provider alert
-      ↓
-Potential incident?
-      ↓ yes
-Create / update incident
-      ↓
-Collect bounded evidence
-      ↓
-Run AI investigation
+- logs
+- metrics
+- traces
+- health checks
+- process events
+- container events
+- deployment events
+- infrastructure state
+- security-related signals
+- Git/deployment changes
+
+Different environments expose different evidence.
+
+Therefore each Watcher/runtime should advertise supported capabilities.
+
+Example conceptual capability set:
+
+```json
+{
+  "capabilities": [
+    "logs",
+    "health",
+    "metrics",
+    "cpu",
+    "memory",
+    "containers",
+    "deployments"
+  ]
+}
 ```
 
-LLM reasoning activates when:
-
-```text
-an incident is created
-or
-a developer explicitly requests investigation
-```
-
-This protects cost, latency, and reliability.
-
-The continuous layer may eventually identify signals such as:
-
-```text
-error bursts
-repeated 5xx responses
-same exception across many requests
-provider alert events
-health-check failures
-dependency failures
-deployment-related regressions
-```
-
-Initial continuous detection should remain simple and deterministic.
+Detection rules must only run when the required evidence is available.
 
 ---
 
-# 9. Core Incident Workflow
+# 10. Telemetry Normalization
 
-The intended mature workflow is:
+All telemetry sources should eventually normalize their data into a common internal event representation.
+
+The Stage 10 model is named:
 
 ```text
-Production Application
-        ↓
+TelemetryEvent
+```
+
+Stage 10 must define this model concretely in code.
+
+At minimum, the design must support the following concepts when relevant:
+
+- event identity
+- timestamp
+- project identity
+- service identity
+- environment
+- source
+- event type
+- severity/level
+- message
+- request/correlation identifier
+- HTTP status
+- latency/duration
+- exception/error information
+- structured metadata
+
+Not every field must be present for every event.
+
+The implementation should use the project's existing modeling conventions and must not introduce a second competing model style without justification.
+
+---
+
+# 11. Collector Architecture
+
+Telemetry collection must use a common abstraction.
+
+Conceptually:
+
+```text
 Telemetry Source
-        ↓
-Incident Detection / External Alert
-        ↓
-SentinelOps Incident
-        ↓
-Collect Runtime Evidence
-        ↓
-Retrieve Relevant Project Knowledge
-        ↓
-Inspect Relevant Git History / Recent Changes
-        ↓
-Retrieve Similar Previous Incidents
-        ↓
-LangGraph Investigation
-        ↓
-Evidence-Based Root Cause Analysis
-        ↓
-Deterministic RCA Validation
-        ↓
-Remediation Proposal
-        ↓
-Deterministic Remediation Validation
-        ↓
-Human Review
-   ┌────┼───────────┐
-   │    │           │
-reject revision   approve
-   │    │           │
-   └────┴─────┐     ▼
-              │  Create Isolated Branch
-              │     ↓
-              │  Apply Approved Remediation
-              │     ↓
-              │  Build / Test / Reproduce
-              │     ↓
-              │  Validation Result
-              │     ↓
-              │  Developer Final Review
-              │     ↓
-              └── Developer Decides Merge
+      ↓
+Collector
+      ↓
+Normalizer
+      ↓
+TelemetryEvent
 ```
 
-SentinelOps must never automatically merge to the production branch.
+The exact Python protocol/interface must be designed during Stage 10 planning after inspecting the existing repository.
+
+The interface must make it possible to add future sources without changing the core Watcher pipeline.
+
+Potential future collectors/connectors include:
+
+- JSONL/file logs
+- health checks
+- generic HTTP ingestion
+- host metrics
+- Docker
+- CloudWatch/AWS
+- Vercel
+- Railway
+- Kubernetes
+
+Stage 10 implements only the explicitly approved first collectors.
 
 ---
 
-# 10. Main Project Principles
+# 12. Rolling Evidence Buffer
 
-## 10.1 Human Control
+Evidence must be collected before an incident occurs.
 
-AI components may:
+The Watcher maintains recent telemetry so the system can preserve evidence from before the visible failure.
 
-```text
-investigate
-reason
-retrieve
-recommend
-prepare changes
-validate isolated changes
-```
-
-They must not silently:
+Conceptual behavior:
 
 ```text
-merge into main
-deploy to production
-delete production data
-modify production secrets
-execute destructive infrastructure operations
-disable security controls
-rewrite Git history
-discard developer changes
+continuous recent telemetry
+        ↓
+incident begins
+        ↓
+freeze relevant incident window
+        ↓
+continue bounded post-trigger capture
+        ↓
+evidence bundle
 ```
 
-Developer approval is required before a generated remediation may be applied.
+The exact time window must be configurable.
 
-A separate final developer decision is required before merge/deployment.
+Stage 10 creates the buffering/persistence foundation.
+
+Stage 12 adds full incident-window freezing, correlation, and evidence-bundle behavior.
 
 ---
 
-## 10.2 Evidence Before Conclusions
+# 13. Incident Detection
 
-SentinelOps must never present an unsupported model guess as a confirmed root cause.
+Initial detection should be deterministic.
 
-Every RCA should distinguish:
+Future examples include:
 
-```text
-observed fact
-retrieved evidence
-inference
-confidence
-uncertainty
-contradiction
-```
+- repeated health-check failures
+- 5xx rate spike
+- exception burst
+- latency spike
+- CPU saturation
+- memory saturation
+- disk pressure
+- restart loop
+- dependency timeout burst
+- authentication failure spike
+- deployment followed by increased failures
 
-References should be preserved where practical:
+Static rules may later be enhanced with baselines such as:
 
-```text
-runtime evidence ID
-request ID
-trace ID
-file path
-symbol
-code chunk ID
-Git commit ID
-deployment ID
-historical incident ID
-```
+- rolling averages
+- percent change
+- standard deviation
+- duration windows
 
-Historical incidents are advisory context, not replacements for current evidence.
+Complex predictive ML is not required for the initial product.
+
+Full detection belongs to Stage 11.
+
+Stage 10 must not prematurely implement the complete detection engine.
 
 ---
 
-## 10.3 Deterministic Components Before AI
+# 14. Incident Correlation
 
-Where deterministic logic can solve a task reliably, prefer it.
+A single real incident can produce multiple symptoms.
+
+Example:
+
+```text
+database timeout
++
+500 errors
++
+checkout failures
++
+health failure
++
+container restart
+```
+
+These should be eligible to become one incident rather than five unrelated incidents.
+
+Future correlation dimensions include:
+
+- service
+- time window
+- exception/error
+- dependency
+- request path
+- deployment
+
+Full incident correlation belongs to Stage 12.
+
+---
+
+# 15. Historical Incident Memory
+
+Historical incident memory is a core differentiator.
+
+After an incident is validated/resolved, SentinelOps stores trusted outcome information such as:
+
+- final root cause
+- supporting evidence
+- actions taken
+- result
+- recovery time
+- useful remediation
+- relevant project/service context
+
+Future incidents can retrieve similar trusted historical incidents.
+
+The goal is to turn SentinelOps into organization-specific operational intelligence.
+
+Stage 7 already provides the historical RAG foundation.
+
+Future work should build on it rather than replacing it.
+
+---
+
+# 16. Recommendation Levels
+
+SentinelOps should classify response level.
+
+## A. Explain Only
+
+For complicated, uncertain, or unsafe situations.
 
 Examples:
 
-```text
-file scanning
-AST parsing
-Git commands
-evidence normalization
-branch safety checks
-schema validation
-review lifecycle
-incident correlation thresholds
-```
+- database corruption
+- complex multi-service failure
+- security incident
+- unknown infrastructure failure
+- architectural problem
 
-Use LLM reasoning where interpretation is genuinely needed.
+SentinelOps provides:
 
----
+- what happened
+- where
+- when
+- impact
+- likely cause
+- evidence
+- historical context
+- investigation guidance
+- possible solutions
 
-## 10.4 Isolation
+Developer handles the response.
 
-Generated code changes must be isolated.
+## B. Recommend Solution
 
-```text
-trusted base branch
-      ↓
-sentinel/incident-<incident-id>-fix
-      ↓
-approved change
-      ↓
-build/tests
-      ↓
-isolated verification
-      ↓
-developer review
-```
+For incidents where a likely response is known but mutation is not automatically appropriate.
 
-No automated direct modification of `main`.
+SentinelOps generates:
 
----
+- recommended response
+- rationale
+- relevant target/context
+- risk
+- validation steps
+- confidence
 
-## 10.5 Reactive, Not Predictive
+## C. Small Safe Action
 
-The initial product does not attempt ML-based failure prediction.
+Only bounded and reversible operations.
 
-Do not add:
+Possible later examples:
 
-```text
-future crash forecasting
-failure probability prediction
-predictive maintenance
-traffic forecasting
-```
+- restart one known unhealthy worker
+- restart one known container
+- disable a known feature flag
+- scale replicas within configured limits
+- retry a safe operation
+- roll back the immediately previous known-good deployment
 
-unless explicitly approved as a later separate product capability.
+Every action must include:
 
----
-
-# 11. Development Governance
-
-## 11.1 Stage Gate Rule
-
-Every stage must be independently implemented, tested, manually verified, and explicitly approved.
-
-```text
-Agent plans current stage
-        ↓
-User reviews plan
-        ↓
-Agent implements current stage
-        ↓
-Automated tests
-        ↓
-User manually verifies
-        ↓
-User approves
-        ↓
-Commit / push
-        ↓
-Next stage
-```
-
-The coding agent must never implement future stages simply because they are documented in this file.
+- action type
+- target
+- reason
+- risk
+- bounds
+- required permissions
+- approval
+- execution result
+- validation
+- audit record
 
 ---
 
-## 11.2 Plan Before Implementation
+# 17. Safety Policy
 
-For substantial stages:
+Human approval alone is not sufficient.
 
-1. read `PROJECT.md`,
-2. read `docs/PROJECT_JOURNAL.md`,
-3. inspect completed implementation and tests,
-4. return a plan only,
-5. wait for approval,
-6. implement only after plan approval.
-
----
-
-## 11.3 No Automatic Commit or Push
-
-The coding agent must never automatically:
+Execution flow:
 
 ```text
-git add
-git commit
-git push
-git merge
+Recommendation
+    ↓
+Safety Policy
+    ↓
+Human Approval
+    ↓
+Safety Policy Again
+    ↓
+Execution
+    ↓
+Verification
+    ↓
+Audit
 ```
 
-unless the user explicitly requests that exact Git action.
+A user must not be able to approve an action outside configured safety bounds.
 
-Normal stage implementation ends with uncommitted changes for user verification.
-
----
-
-## 11.4 Protect Completed Features
-
-Before modifying existing behavior:
-
-1. identify impacted modules,
-2. preserve approved APIs unless change is justified,
-3. add regression tests,
-4. run relevant old tests,
-5. run the complete suite before completion,
-6. avoid broad refactors.
+Security-related automation must be more conservative than normal reliability automation.
 
 ---
 
-## 11.5 No Silent Fixes
+# 18. Security Incidents
 
-Unexpected implementation problems must be recorded in the journal.
+SentinelOps may detect defensive security anomalies, for example:
 
-Document:
+- login failure spikes
+- endpoint scanning behavior
+- request floods
+- abnormal traffic patterns
+- suspicious application activity
 
-```text
-Problem
-Observed behavior
-Suspected cause
-Attempted solution
-Result
-Final solution
-Why final solution worked
-```
+The product must avoid making unsupported claims such as:
 
-Do not repeatedly mutate unrelated components until tests happen to pass.
-
----
-
-## 11.6 Code Quality
+> “You are being hacked.”
 
 Prefer:
 
+> “Security anomaly detected.”
+
+Then:
+
 ```text
-small modules
-clear interfaces
-typed domain models
-centralized configuration
-dependency injection where useful
-structured logging
-deterministic safety logic
-isolated adapters
-testable functions
+collect evidence
+→ classify severity
+→ notify
+→ recommend response
 ```
 
-Comments should explain **why**, not trivial syntax.
-
-Avoid premature abstraction.
+Security automation should remain highly restricted.
 
 ---
 
-# 12. Mandatory Project Journal
+# 19. Notification Architecture
 
-Maintain:
+Future notification channels may include:
 
-```text
-docs/PROJECT_JOURNAL.md
-```
+- Android
+- email
+- webhook
+- Slack
+- Discord
+- Telegram
 
-Every stage should contain:
+Native Android push does not need to be the first notification mechanism.
 
-```markdown
-## Stage X — <Name>
-
-### Objective
-
-### Design Decision
-
-### Files Added / Changed
-
-### Problems Encountered
-
-### Attempts
-
-### Final Solution
-
-### Why It Worked
-
-### Verification
-
-### Known Limitations
-
-### User Approval
-
-Pending / Approved
-```
-
-Do not rewrite history to hide failed attempts.
+Webhook/email/chat integrations can provide useful early mobile notification behavior.
 
 ---
 
-# 13. Architecture Boundaries
+# 20. Windows Control Center
 
-Current and future architecture should remain modular.
+The Windows Control Center is the deep-investigation client.
 
-Conceptual packages may include:
+Expected long-term areas include:
 
-```text
-app/
-├── incidents/
-├── telemetry/
-├── retrieval/
-├── repository/
-├── project_intelligence/
-├── integrations/
-├── detection/
-├── investigation/
-├── workflows/
-├── memory/
-├── remediation/
-├── validation/
-├── notifications/
-├── reports/
-├── api/
-├── storage/
-└── common/
-```
+- overview
+- projects
+- services
+- incidents
+- incident detail
+- evidence
+- logs
+- metrics
+- traces
+- deployment history
+- source context
+- Git history/diffs
+- RCA
+- historical matches
+- recommendations
+- approvals
+- integrations
+- settings
+- reports
 
-Not every folder must exist immediately.
-
-A future concept listed here is **not permission to implement it early**.
-
----
-
-# 14. Core Data Models
-
-## 14.1 Project
-
-Represents a monitored software project.
-
-Possible fields:
+Principle:
 
 ```text
-project_id
-name
-repository_source
-repository_identifier
-default_branch
-environment
-created_at
-status
-last_indexed_commit
-```
-
-## 14.2 Service
-
-Represents a deployable/runtime component.
-
-Possible fields:
-
-```text
-service_id
-project_id
-name
-environment
-runtime_source
-deployment_provider
-current_version
-current_commit
-health
-```
-
-## 14.3 Project Knowledge
-
-Represents indexed repository understanding.
-
-Possible fields:
-
-```text
-project_id
-file_path
-symbol_name
-symbol_type
-line_range
-content
-relationships
-configuration_refs
-dependency_refs
-indexed_commit
-```
-
-## 14.4 Incident
-
-Represents one runtime problem.
-
-Possible fields:
-
-```text
-id
-project_id
-title
-status
-severity
-created_at
-detected_at
-service
-environment
-trigger_source
-summary
-```
-
-## 14.5 Evidence
-
-Represents collected incident information.
-
-Possible evidence types:
-
-```text
-runtime_log
-metric
-trace
-stack_trace
-git_commit
-deployment
-source_code
-configuration
-previous_incident
-```
-
-Important metadata may include:
-
-```text
-id
-incident_id
-source
-timestamp
-service
-request_id
-trace_id
-content
-reference
-```
-
-## 14.6 Root Cause Analysis
-
-Possible fields:
-
-```text
-incident_id
-failure_location
-triggering_condition
-root_cause_hypothesis
-affected_component
-summary
-supporting_evidence
-contradicting_evidence
-confidence
-uncertainties
-```
-
-## 14.7 Remediation Proposal
-
-Possible fields:
-
-```text
-remediation_id
-incident_id
-investigation_id
-status
-summary
-target_files
-target_symbols
-proposed_changes
-rationale
-risks
-validation_steps
-evidence_references
-validation
-assumptions
-advisory_historical_context
-confidence
-created_at
-updated_at
-```
-
-Remediation status may evolve through:
-
-```text
-draft
-validated
-failed_validation
-approved
-rejected
-revision_requested
-```
-
-## 14.8 Remediation Review
-
-Represents a human review decision.
-
-```text
-review_id
-incident_id
-remediation_id
-investigation_id
-decision
-reviewer
-comment
-created_at
-```
-
-Possible decisions:
-
-```text
-approved
-rejected
-revision_requested
-```
-
-## 14.9 Remediation Branch
-
-Represents the isolated Git branch authorized by a specific approval.
-
-```text
-branch_id
-incident_id
-remediation_id
-approval_id
-branch_name
-base_branch
-base_commit
-created_at
-```
-
-## 14.10 Validation Result
-
-Represents whether an approved remediation worked.
-
-```text
-build_status
-tests
-incident_reproduction
-regressions
-runtime_health
-summary
-```
-
-## 14.11 Incident Memory
-
-Stores trusted completed incident knowledge.
-
-```text
-incident_id
-symptoms
-root_cause
-evidence
-solution
-failed_attempts
-successful_fix
-affected_components
-final_result
+Phone  = fast decision
+Laptop = deep investigation
 ```
 
 ---
 
-# 15. LangGraph Role
+# 21. Android Client
 
-LangGraph orchestrates investigation reasoning and bounded revision.
+The Android app is a client, not the monitoring engine.
 
-The graph should operate only after supporting components exist independently.
+Expected responsibilities:
 
-Current investigation concepts include:
+- receive notifications
+- show active incidents
+- show severity
+- show impact
+- show start time
+- show affected service
+- show likely cause
+- show concise evidence
+- show similar historical incidents
+- show recommendation
+- acknowledge incident
+- approve/reject eligible bounded actions
+- show execution/result status
+
+The phone does not need to stay continuously active.
+
+---
+
+# 22. Deployment Topologies
+
+SentinelOps is one product with multiple deployment topologies.
+
+Possible conceptual modes:
+
+- local
+- standalone
+- distributed
+- connector
+
+## Small deployment
+
+```text
+Watcher + Engine
+in one persistent runtime
+```
+
+## Larger company
+
+```text
+distributed Watchers
+        ↓
+central Sentinel Engine
+```
+
+## Serverless application
+
+```text
+serverless app
+      ↓ telemetry/events
+persistent Sentinel Runtime
+```
+
+The Watcher should run as independent always-on compute close to the monitored application whenever possible.
+
+It does not need to run on the developer laptop or phone.
+
+---
+
+# 23. Same-Machine Monitoring Limitation
+
+If the application and Watcher run on the same host and the entire host disappears, the local Watcher cannot report its own disappearance.
+
+Host-level availability may require external evidence such as:
+
+- cloud instance health
+- provider monitoring
+- load balancer health
+- Kubernetes control plane
+- another Watcher
+- external uptime checks
+
+This is a fundamental distributed-system limitation and should not be hidden.
+
+---
+
+# 24. Docker Direction
+
+Docker is the preferred eventual universal packaging/runtime approach because it can work across:
+
+- developer machines
+- VPS
+- EC2
+- Railway-like platforms
+- company infrastructure
+- Kubernetes
+
+Platform-specific helpers/connectors can be added later.
+
+Docker packaging is not the main implementation goal of Stage 10 unless needed to validate the Watcher process boundary.
+
+---
+
+# 25. Generic HTTP Ingestion
+
+Generic HTTP ingestion is important because it allows unsupported platforms to send telemetry without requiring a native connector.
+
+Stage 10 must include a minimal generic HTTP ingestion capability.
+
+The exact endpoint structure must be decided during the Stage 10 plan after inspecting existing API conventions.
+
+Do not assume legacy conceptual examples such as `/telemetry/logs`, `/telemetry/metrics`, and `/telemetry/events` are final route names.
+
+Requirements:
+
+- accept normalized or normalizable telemetry
+- validate input
+- associate telemetry with project/service identity
+- store accepted events
+- reject malformed events cleanly
+- avoid triggering AI work directly
+- expose deterministic, testable behavior
+
+---
+
+# 26. Daily and Weekly Reporting
+
+The reporting layer should eventually generate fact-based reports from stored data.
+
+Possible report information:
+
+- services monitored
+- incident count
+- severity distribution
+- resolved incidents
+- top/repeated incidents
+- deployment-correlated incidents
+- mean recovery time
+- safe actions executed
+- recommendations awaiting review
+- current status
+- historical patterns
+
+Reports must come from stored facts rather than unsupported LLM invention.
+
+Reporting belongs primarily to Stage 19.
+
+---
+
+# 27. Existing Completed Stages
+
+## Stage 0 — Foundation ✅
+
+Built:
+
+- FastAPI
+- Uvicorn
+- pytest
+- httpx
+- modular application structure
+- health endpoint
+- configuration/logging
+- README/environment setup
+- project journal
+
+## Stage 1 — Incident Management ✅
+
+Built:
+
+- incident model
+- incident lifecycle
+- repository interfaces
+- in-memory implementation
+
+Lifecycle:
+
+```text
+OPEN
+→ INVESTIGATING
+→ RESOLVED
+→ CLOSED
+```
+
+## Stage 2 — Controlled Demo Application ✅
+
+Built independent demo application with deterministic incident behavior.
+
+Includes:
+
+- products/orders behavior
+- controlled `OrderProcessingError`
+- failure toggle
+- request IDs
+- structured logs
+- health endpoint
+
+## Stage 3 — Telemetry / Evidence ✅
+
+Built runtime log evidence foundation:
+
+- JSONL runtime logs
+- request correlation
+- evidence collection
+- deduplication
+- incident-linked evidence
+
+Current flow is still manually triggered.
+
+## Stage 4 — Source Indexing ✅
+
+Built source-intelligence foundation:
+
+- Python AST parsing
+- code chunks
+- symbol extraction
+- deterministic IDs
+- search/token ranking
+
+## Stage 5 — Git Intelligence ✅
+
+Built read-only Git investigation:
+
+- commits
+- commit details
+- diffs
+- file history
+- safe repository paths
+
+No GitHub API is required for the completed stage.
+
+## Stage 6 — AI Investigation ✅
+
+Built LangGraph investigation flow:
 
 ```text
 analyze_runtime
-      ↓
-retrieve_code
-      ↓
-analyze_code
-      ↓
-retrieve_git_context
-      ↓
-analyze_changes
-      ↓
-retrieve_historical_context
-      ↓
-synthesize_rca
-      ↓
-validate_rca
-      ↓
-bounded revision if required
-      ↓
-END
+→ retrieve_code
+→ analyze_code
+→ retrieve_git_context
+→ analyze_changes
+→ historical context
+→ synthesize RCA
+→ validate RCA
+→ bounded revision
 ```
 
-Do not put every product capability into one giant graph.
+Supports real/fake LLM provider abstraction.
 
-Project onboarding, telemetry collection, Git mutation safety, human review, and dashboard behavior may remain outside the investigation graph where that separation is safer.
+## Stage 7 — Incident Memory ✅
+
+Built historical RAG for trusted completed/validated incident outcomes.
+
+## Stage 8 — Remediation Proposal ✅
+
+Built recommendation generation including:
+
+- summary
+- target files/context
+- symbols
+- suggested changes/actions
+- rationale
+- risk
+- validation
+- confidence
+
+Operational actions are not incorrectly treated as code modifications.
+
+## Stage 9 — Human Approval + Isolated Branch ✅
+
+Built:
+
+- approved
+- rejected
+- revision requested
+- audit records
+- safe isolated Git branch creation
+
+Safety properties include:
+
+- no branch without approval
+- stale approval cannot approve regenerated remediation
+- rejected proposals remain rejected
+- review history preserved
+- no commit
+- no merge
+- no push
+- no source mutation
+- branch operation idempotency
 
 ---
 
-# 16. RAG Role
+# 28. Revised Remaining Roadmap
 
-RAG is used to retrieve bounded project knowledge.
+## Stage 10 — Sentinel Watcher Foundation
 
-Knowledge categories include:
+Build the runtime and normalized telemetry foundation.
 
-```text
-source code
-Git/change history
-historical incidents
-documentation/runbooks later
-configuration
-```
+## Stage 11 — Detection Rules + Automatic Incident Creation
 
-RAG must return provenance.
+Turn telemetry into automatically detected incidents.
 
-Historical context cannot be used as fabricated evidence for the current incident.
+## Stage 12 — Incident Correlation + Rolling Evidence Windows
 
-Project-scale retrieval should operate over the maintained project index rather than repeatedly sending the full repository to the model.
+Correlate signals and construct incident evidence bundles.
 
----
+## Stage 13 — Project Onboarding + Project Knowledge Base
 
-# 17. Current Controlled Demo Application
+Introduce first-class project/service/environment configuration and reusable project understanding.
 
-The controlled demo application remains the validation target for the core engine.
+## Stage 14 — Deployment / Telemetry Connectors
 
-Current characteristics include:
+Expand from generic/local collection to real platform integrations.
 
-```text
-FastAPI demo application
-products/orders
-structured logs
-request correlation IDs
-controlled OrderProcessingError failure mode
-safe failure enable/disable endpoints
-runtime JSONL evidence
-```
+## Stage 15 — Notification System
 
-The demo application is a development fixture.
+Webhook/email/chat channels first, native push later.
 
-It must not become a permanent architectural assumption.
+## Stage 16 — Windows Control Center
 
-Future integrations should replace hard-coded `demo_app` assumptions with configurable project and telemetry adapters.
+Build the deep investigation user interface.
 
----
+## Stage 17 — Android Mobile Client
 
-# 18. Supported Core Incident Types
+Build fast incident notification/review/approval client.
 
-Initial focus:
+## Stage 18 — Safe Action Framework
 
-## Application Exception
+Implement small bounded actions with policy + approval + verification + audit.
 
-Expected behavior:
+## Stage 19 — Reports + Operational Memory UX
 
-```text
-collect exception evidence
-identify failure path
-retrieve relevant source
-inspect Git context
-produce evidence-grounded RCA
-propose remediation
-```
+Daily/weekly reports, trends, recovery metrics, repeated incidents, historical operational insights.
 
-## Configuration Failure
+## Stage 20 — Security + Hardening + Packaging
 
-Expected behavior:
-
-```text
-connect runtime symptoms to configuration
-distinguish operational mitigation from source modification
-propose safe configuration remediation
-```
-
-## Dependency Failure
-
-Expected behavior:
-
-```text
-identify external dependency
-avoid falsely blaming application code
-state uncertainty
-recommend bounded remediation/diagnostics
-```
-
-## Bad Recent Code Change
-
-Expected behavior:
-
-```text
-correlate incident with relevant Git change
-identify affected file/symbol
-show commit evidence
-propose remediation
-```
+Authentication, authorization, secrets, encryption, retention, permissions, rate limits, packaging, Docker/releases/installers and production hardening.
 
 ---
 
-# 19. Dashboard / Control Center Vision
+# 29. Stage 10 — Frozen Scope
 
-The dashboard is not merely a visual wrapper around APIs.
+Stage 10 is now:
 
-It is the primary developer control center.
+> **Sentinel Watcher Foundation**
 
-Future views should include:
+Its purpose is to create the always-on telemetry runtime that later stages will use.
 
-## Overview
+Stage 10 is infrastructure/foundation work.
+
+It is intentionally **not** the full anomaly detector and **not** automatic remediation.
+
+## Stage 10 must implement
+
+### A. Watcher Runtime
+
+Create a long-running Watcher runtime/process abstraction integrated cleanly with the existing application architecture.
+
+Requirements:
+
+- explicit start/stop lifecycle
+- clean shutdown
+- health/status visibility
+- collector orchestration
+- deterministic behavior
+- errors in one collector should not silently corrupt unrelated telemetry
+- no LLM required
+
+The exact process/module layout must follow the existing repository conventions discovered during planning.
+
+### B. Normalized `TelemetryEvent`
+
+Create one canonical normalized telemetry-event model.
+
+It must:
+
+- represent multiple telemetry types
+- include project/service identity
+- include timestamp/source/type
+- support structured metadata
+- allow optional event-specific fields
+- be serializable/persistable
+- be deterministic and testable
+
+The coding agent must inspect existing models before choosing the final implementation.
+
+### C. Collector Abstraction
+
+Create a small extensible collector contract.
+
+It must support:
+
+- starting/stopping or polling/collection as appropriate
+- returning or emitting normalized telemetry
+- collector identity/type
+- capability advertisement where appropriate
+- predictable failure handling
+
+Do not over-engineer a plugin framework in Stage 10.
+
+### D. First Collectors
+
+Stage 10 should implement:
+
+1. JSONL/file log collector
+2. Health-check collector
+3. Generic HTTP ingestion path
+
+A basic host-metrics collector may be included only if the plan shows it can be added without expanding the stage materially.
+
+A Docker collector foundation may be designed, but full Docker monitoring belongs in a later connector stage unless implementation is very small and clearly isolated.
+
+### E. Generic HTTP Ingestion
+
+Provide an API-based way to submit telemetry.
+
+Must:
+
+- validate input
+- normalize into `TelemetryEvent`
+- associate with known project/service identity
+- persist accepted telemetry
+- return clear validation failures
+- remain deterministic
+- not perform AI investigation
+
+Exact routes must match current application conventions.
+
+### F. Local Persistence
+
+Use a simple local persistence layer suitable for the Watcher foundation.
+
+Preferred initial direction:
 
 ```text
-project status
-connected services
-active incidents
-recent incidents
-service health
-monitoring status
+SQLite
 ```
 
-## Projects
+However:
+
+- reuse an existing project persistence abstraction if one already exists
+- do not introduce a competing persistence pattern unnecessarily
+- keep the storage layer replaceable
+- schema must be migration-friendly
+- tests must not rely on a developer's real local database
+
+Stage 10 persistence should support at least:
+
+- telemetry events
+- service/project registration needed by telemetry
+- Watcher/runtime status if persistence is appropriate
+
+### G. Rolling Buffer Foundation
+
+Create a bounded recent-telemetry access mechanism.
+
+Requirements:
+
+- bounded by time, count, or both
+- configurable
+- deterministic
+- no unbounded in-memory growth
+- recent events retrievable by service/project and time range
+
+Full incident evidence freezing belongs to Stage 12.
+
+### H. Project / Service Identity Foundation
+
+Stage 10 needs the minimum identity required to reliably attach telemetry to the correct monitored service.
+
+Do not build the complete onboarding system yet.
+
+Minimum requirement:
 
 ```text
-repository connection
-deployment/runtime connection
-telemetry source
-index status
-last indexed commit
-project structure summary
-```
-
-## Live / Recent Telemetry
-
-```text
-recent logs
-errors
+project
+  ↓
 service
-severity
-request/trace IDs
-filters
 ```
 
-The UI may stream recent events, but it must not imply that an LLM is analyzing every line.
+Environment identity should be included if it already fits the existing incident model cleanly.
 
-## Incident Detail
+Full onboarding/domain modeling belongs to Stage 13.
 
-```text
-timeline
-runtime evidence
-relevant code
-Git context
-historical matches
-RCA
-confidence
-uncertainties
-remediation
-```
+### I. Watcher Health / Status
 
-## Approval
+Expose enough status to answer:
 
-```text
-approve
-reject
-request revision
-review history
-```
+- Is the Watcher running?
+- Which collectors are active?
+- Which collectors are unhealthy?
+- What capabilities are available?
+- When was telemetry last received?
 
-## Validation
-
-```text
-branch
-base commit
-changed files
-build
-tests
-incident reproduction
-regressions
-final result
-```
-
-## Integrations / Settings
-
-```text
-repository
-telemetry
-deployment metadata
-notifications
-LLM provider
-```
-
-UI work should follow stable backend capabilities.
+Exact API shape must follow existing conventions.
 
 ---
 
-# 20. Notifications
+# 30. Stage 10 Explicit Non-Goals
 
-Notifications should inform developers of meaningful events, such as:
+Stage 10 must NOT implement:
 
-```text
-new high-severity incident
-RCA completed
-remediation ready for review
-validation failed
-validation passed
-manual action required
-```
+- full detection rules
+- automatic incident creation
+- incident correlation
+- full evidence-window freezing
+- AI anomaly detection
+- new RCA logic
+- new remediation generation
+- automatic patch generation
+- source-code mutation
+- safe-action execution
+- native Vercel connector
+- native Railway connector
+- full AWS/CloudWatch connector
+- full Kubernetes connector
+- full Docker monitoring unless separately approved
+- Windows UI
+- Android app
+- push notifications
+- full project onboarding
+- production authentication/authorization overhaul
 
-A notification should include enough context to act without pretending the notification itself is the complete investigation.
-
-Initial channels may include:
-
-```text
-email
-Slack
-generic webhook
-```
-
-Only one channel is necessary for the first working version.
-
----
-
-# 21. Security Component
-
-Runtime security investigation is a later bounded module.
-
-Potential use cases:
-
-```text
-repeated authentication failures
-suspicious endpoint usage
-unusual application events
-```
-
-SentinelOps must not market itself as a replacement for:
-
-```text
-WAF
-SIEM
-EDR
-firewall
-professional security monitoring
-```
-
-Dangerous autonomous security actions remain outside the initial scope.
+Do not jump ahead.
 
 ---
 
-# 22. Daily Reliability Report
+# 31. Stage 10 Acceptance Criteria
 
-A later reporting module may summarize:
+Stage 10 is complete only when all of the following are true.
 
-```text
-availability data when available
-incident count
-severity
-resolved/unresolved incidents
-root causes
-remediation status
-important runtime failures
-security events when supported
+## Architecture
+
+- [ ] Watcher is represented as a clear runtime component
+- [ ] collector abstraction exists
+- [ ] one canonical `TelemetryEvent` exists
+- [ ] current Stage 0–9 behavior remains intact
+- [ ] no obsolete automatic-patch Stage 10 behavior is introduced
+
+## Telemetry
+
+- [ ] JSONL/file telemetry can be ingested
+- [ ] health-check telemetry can be produced
+- [ ] generic HTTP telemetry can be accepted
+- [ ] telemetry from all Stage 10 sources reaches the same normalized model
+- [ ] invalid telemetry is rejected predictably
+
+## Identity
+
+- [ ] telemetry is associated with the correct project/service
+- [ ] unknown or invalid identity behavior is explicitly defined and tested
+
+## Persistence
+
+- [ ] accepted telemetry survives process-level storage boundaries expected by the Stage 10 design
+- [ ] tests use isolated storage
+- [ ] storage cannot grow without an explicit retention/bounding strategy
+
+## Rolling access
+
+- [ ] recent telemetry can be queried deterministically
+- [ ] result filtering by project/service/time is covered
+- [ ] bounded buffer behavior is tested
+
+## Runtime
+
+- [ ] Watcher health/status is observable
+- [ ] collector status is observable
+- [ ] collector failure behavior is defined
+- [ ] clean startup/shutdown is tested
+
+## Safety
+
+- [ ] Watcher requires no write permission to Git
+- [ ] Watcher performs no infrastructure mutation
+- [ ] Stage 10 performs no source-code mutation
+- [ ] no automatic remediation is introduced
+
+## Regression
+
+- [ ] Stage 10-specific tests pass
+- [ ] full test suite passes with:
+
+```bash
+python -m pytest -v
 ```
 
-Possible delivery:
+- [ ] no existing Stage 0–9 tests are intentionally weakened or deleted to make Stage 10 pass
+
+## Manual Verification
+
+Manual verification must demonstrate at least:
 
 ```text
-dashboard
-email
-Slack
+start SentinelOps/Watcher
+        ↓
+register/use test project + service
+        ↓
+ingest telemetry by HTTP
+        ↓
+read JSONL/file telemetry
+        ↓
+run health-check collector
+        ↓
+confirm normalized events
+        ↓
+confirm persistence
+        ↓
+confirm recent-event retrieval
+        ↓
+confirm Watcher/collector health
+        ↓
+restart where relevant
+        ↓
+confirm expected persisted state
 ```
+
+The journal remains Pending until this verification is completed.
 
 ---
 
-# 23. Deployment Philosophy
+# 32. Stage 11 Preview
 
-SentinelOps should ultimately support self-hosted or controlled deployment patterns.
+Stage 11 will consume Stage 10 telemetry and introduce deterministic detection.
 
-Possible forms:
+Planned examples:
 
-```text
-local developer mode
-server/VM service
-Docker service
-central control plane + optional collector
-```
+- repeated health-check failure
+- 5xx spike
+- exception burst
+- latency spike
+- CPU/memory threshold breaches where data exists
+- dependency timeout bursts
+- restart signals where data exists
 
-Do not design the product so that it only works when:
-
-```text
-VS Code is open
-the developer laptop is awake
-the monitored app imports SentinelOps directly
-the app is written in Python
-```
-
-Repository and telemetry connectivity must remain independent from developer-editor uptime.
-
----
-
-# 24. Explicit Non-Goals for Initial Development
-
-Do not implement until core reliability behavior is stable:
+Flow:
 
 ```text
-predictive failure forecasting
-machine-learning failure prediction
-automatic merge to main
-automatic production deployment
-fully autonomous infrastructure mutation
-enterprise RBAC
-enterprise SSO
-billing
-mobile application
-custom LLM training
-large-scale distributed streaming platform
-dozens of specialized agents
-full SIEM replacement
-complex autonomous Kubernetes remediation
-```
-
-Multi-provider integrations should be introduced incrementally rather than all at once.
-
----
-
-# 25. Implementation Stages
-
-Each stage must produce a visible, verifiable result.
-
-Completed stages must not be silently redefined in a way that invalidates already-approved behavior.
-
-## Stage 0 — Repository Foundation and Development Controls
-
-Goal:
-
-```text
-project skeleton
-health endpoint
-configuration
-tests
-README
-project journal
-```
-
-Gate: repository starts and structure is verified.
-
----
-
-## Stage 1 — Incident Management Core
-
-Goal:
-
-```text
-create/read/list incidents
-status transitions
-typed incident domain
-```
-
-Gate: incident APIs manually verified.
-
----
-
-## Stage 2 — Controlled Demo Application
-
-Goal:
-
-```text
-separate demo service
-structured logs
-products/orders
-controlled failure mode
-request IDs
-```
-
-Gate: normal and controlled-failure behavior verified.
-
----
-
-## Stage 3 — Telemetry and Evidence Collection
-
-Goal:
-
-```text
-collect runtime evidence by request ID
-deduplicate evidence
-attach evidence to incident
-```
-
-Gate: controlled failure produces correct evidence.
-
----
-
-## Stage 4 — Repository / Source-Code Indexing
-
-Goal:
-
-```text
-deterministic source scanning
-AST/symbol chunking
-source retrieval
-```
-
-Current scope may remain demo/Python-specific until the future Project Intelligence stage.
-
-Gate: relevant code retrieval verified.
-
----
-
-## Stage 5 — Git Change Intelligence
-
-Goal:
-
-```text
-read-only Git commits
-diffs
-file history
-safe Git path handling
-```
-
-Gate: Git context verified.
-
----
-
-## Stage 6 — LangGraph Investigation Workflow
-
-Goal:
-
-```text
-runtime analysis
-code retrieval
-Git context
-RCA synthesis
-evidence validation
-bounded revision
-```
-
-Gate: RCA matches known controlled failure.
-
----
-
-## Stage 7 — Incident Memory and Historical RAG
-
-Goal:
-
-```text
-store trusted completed incidents
-retrieve similar prior incidents
-use historical context as advisory only
-```
-
-Gate: second related incident retrieves first incident correctly.
-
----
-
-## Stage 8 — Remediation Proposal
-
-Goal:
-
-```text
-generate structured remediation
-ground targets in current investigation
-validate proposal
-do not modify repository
-```
-
-Gate: real-provider remediation is semantically correct and repository remains unchanged.
-
----
-
-## Stage 9 — Human Approval and Isolated Git Branch
-
-Goal:
-
-```text
-human approve / reject / request revision
-preserve review audit history
-allow branch creation only for current approved remediation
-create isolated sentinel/incident-<id>-fix branch
-do not apply source changes yet
-```
-
-Safety:
-
-```text
-no source modification
-no patch application
-no commit
-no merge
-no push
-no reset/stash/clean
-```
-
-Gate: branch isolation, approval lifecycle, history, base commit, and idempotency are manually verified.
-
----
-
-## Stage 10 — Approved Remediation Execution and Automated Validation
-
-Goal:
-
-After Stage 9 approval and branch creation, prepare/apply the approved remediation **only inside the authorized isolated branch** and evaluate it.
-
-Expected capabilities:
-
-```text
-generate bounded patch/change
-verify target files/symbols
-apply only approved remediation scope
-build
-run tests
-reproduce incident where feasible
-run regressions
-produce structured validation result
-```
-
-Must not:
-
-```text
-merge
-push
-deploy production
-modify main
-silently expand remediation scope
-```
-
-Gate: user verifies isolated change and validation results.
-
----
-
-## Stage 11 — SentinelOps Control Center / Developer Dashboard
-
-Goal:
-
-Create a coherent web interface over stable backend capabilities.
-
-Initial views:
-
-```text
-project/monitor overview
-incidents
-incident detail
-runtime evidence
-RCA
-historical context
-remediation
-human approval
-branch status
-validation
-recent/live logs where backend support exists
-```
-
-Gate: supported end-to-end workflow can be inspected and controlled from the UI.
-
----
-
-## Stage 12 — Notifications and Alerting
-
-Goal:
-
-Send useful developer notifications for significant incident lifecycle events.
-
-Initial implementation should support one channel such as:
-
-```text
-email
-Slack
-generic webhook
-```
-
-Gate: user receives and verifies a real incident notification.
-
----
-
-## Stage 13 — Project Onboarding and Project Intelligence
-
-Goal:
-
-Transform the current demo-specific source index into a reusable project-understanding subsystem.
-
-Capabilities should be introduced incrementally:
-
-```text
-Project domain
-repository connection/configuration
-initial repository scan
-language/framework discovery where practical
-symbol/file index
-API/config/dependency extraction where practical
-project knowledge query API
-last indexed commit
-incremental re-index of changed files
-```
-
-Important:
-
-```text
-do not send entire repository to LLM repeatedly
-deterministic parsing first
-LLM semantic enrichment only where useful
-preserve source provenance
-```
-
-GitHub may be the first remote repository connector, but the core interfaces must not be GitHub-only.
-
-Gate: connect/index a second sample project and retrieve accurate project context without demo-specific hardcoding.
-
----
-
-## Stage 14 — Telemetry Connectors and Continuous Incident Detection
-
-Goal:
-
-Allow SentinelOps to receive continuous telemetry from a real external-style source and automatically create/update incidents without manual `/evidence/collect` triggering.
-
-Introduce abstractions such as:
-
-```text
-TelemetrySource
 TelemetryEvent
-TelemetryNormalizer
-IncidentDetector
-```
-
-Start with a small number of connectors.
-
-Possible first choices:
-
-```text
-generic HTTP ingestion
-file/log stream adapter
-OpenTelemetry-compatible ingestion later
-provider-specific connector later
-```
-
-Detection should remain deterministic and bounded.
-
-LLM calls must not run for every log event.
-
-Expected flow:
-
-```text
-continuous telemetry
       ↓
-normalize
+Detection Rule
       ↓
-detect/correlate incident
+Trigger
       ↓
-create incident
-      ↓
-collect bounded evidence
-      ↓
-trigger investigation
+Incident automatically created
 ```
 
-Gate: while the developer is not manually triggering collection, a controlled runtime failure creates an incident and launches the supported investigation flow.
+No manual incident creation should be required for covered cases.
+
+Stage 11 is where the Watcher begins automatically turning telemetry into incidents.
 
 ---
 
-## Stage 15 — Runtime Security Investigation
+# 33. Stage 12 Preview
 
-Goal:
+Stage 12 introduces:
 
-Analyze selected application-level suspicious events using the same evidence principles.
+- rolling incident windows
+- pre-incident/post-incident evidence capture
+- event deduplication
+- signal correlation
+- incident evidence bundles
 
-No autonomous destructive response.
-
-Gate: controlled suspicious event generates evidence-backed explanation and developer alert.
-
----
-
-## Stage 16 — Daily Reliability Report
-
-Goal:
-
-Generate a daily operational summary from stored project/incident data.
-
-Gate: report matches known stored events.
-
----
-
-## Stage 17 — Hardening and Final Integration
-
-Goal:
-
-Make the complete product workflow reliable and demonstrable.
-
-May include:
+Example:
 
 ```text
-persistence upgrades
-adapter failure handling
-timeouts/retries
-configuration cleanup
-security review
-integration tests
-end-to-end tests
-documentation
-deployment packaging
-demo environment
-```
-
-Final demonstration should include:
-
-```text
-connected project
-project index
-continuous telemetry
-automatic incident
-evidence-grounded RCA
-historical context
-remediation
-human approval
-isolated branch
-validation
-dashboard
-notification
-```
-
----
-
-# 26. Current Development Status
-
-As of this PROJECT.md revision:
-
-```text
-Stages 0–8: implemented, manually verified, committed
-Stage 9: implemented by coding agent, automated tests reported passing, awaiting final manual user verification and approval
-Stages 10+: not authorized
-```
-
-The coding agent must inspect `docs/PROJECT_JOURNAL.md` and Git history for the exact implementation record.
-
-This status section does not replace the journal.
-
----
-
-# 27. Stage Completion Report Format
-
-At the end of every implementation stage, the coding agent must report:
-
-```text
-STAGE COMPLETED: <stage>
-
-1. What was implemented
-2. Files added
-3. Files modified
-4. Design decisions
-5. Problems encountered
-6. How problems were solved
-7. Tests executed
-8. Test results
-9. How to run this stage
-10. What the user should observe
-11. Manual verification steps
-12. Known limitations
-13. Project journal updated: YES/NO
-14. User Approval: Pending
-15. Ready for user verification
-
-STOP.
-Do not start the next stage.
-Do not commit or push unless explicitly requested.
-```
-
----
-
-# 28. Rules for Errors
-
-If a stage fails:
-
-1. do not hide the error,
-2. do not start the next stage,
-3. record it in the journal,
-4. identify the smallest likely cause,
-5. fix only what is necessary,
-6. re-run current tests,
-7. re-run regressions,
-8. explain what changed,
-9. wait for user verification.
-
----
-
-# 29. Rules for Dependencies
-
-Before adding a dependency:
-
-```text
-confirm real requirement
-check whether existing dependency already solves it
-prefer maintained libraries
-avoid unnecessary paid-service lock-in
-document dependency
-```
-
-Secrets and API keys must never be committed.
-
-Use environment variables and `.env.example`.
-
----
-
-# 30. Testing Philosophy
-
-Tests should include, as relevant:
-
-```text
-unit tests
-integration tests
-workflow tests
-retrieval tests
-Git-operation tests
-incident lifecycle tests
-remediation safety tests
-connector tests
-project-index tests
-detection tests
-regression tests
-```
-
-Critical invariants must have explicit tests.
-
-Examples:
-
-```text
-no remediation branch without human approval
-rejected remediation cannot authorize branch
-old approval cannot authorize regenerated proposal
-AI cannot modify main
-missing evidence cannot produce fake confident RCA
-historical incident cannot masquerade as current evidence
-continuous log ingestion does not trigger LLM for every event
-project re-index does not silently lose unchanged knowledge
-```
-
----
-
-# 31. AI Reliability Rules
-
-SentinelOps must not fabricate:
-
-```text
-logs
-Git commits
-deployments
-tests
-source locations
-repository relationships
-validation results
-incident history
-```
-
-If evidence is insufficient, return uncertainty or:
-
-```text
-Insufficient evidence
-```
-
-rather than inventing certainty.
-
----
-
-# 32. Definition of Core Engine MVP
-
-The **core engine MVP** is complete when Stages 0 through 10 work:
-
-```text
-incident
-    ↓
-evidence
-    ↓
-source context
-    ↓
-Git context
-    ↓
-AI RCA
-    ↓
-incident memory
-    ↓
-remediation proposal
-    ↓
-human approval
-    ↓
-isolated branch
-    ↓
-approved change
-    ↓
-automated validation
-```
-
-This proves the central incident-response engine.
-
----
-
-# 33. Definition of Product MVP
-
-The **product MVP** goes beyond the engine.
-
-A usable external-developer experience requires at minimum:
-
-```text
-core engine
+database timeout
 +
-dashboard
+HTTP 500 burst
 +
-notifications
-+
-project onboarding / project intelligence
-+
-continuous telemetry ingestion / incident detection
+health failure
+        ↓
+one correlated incident
 ```
-
-This proves SentinelOps can be connected to a project rather than only demonstrated against its bundled demo application.
 
 ---
 
-# 34. Final Product Statement
+# 34. Development Workflow
 
-SentinelOps is an AI-assisted incident investigation and recovery platform that connects a software project’s source repository with its runtime telemetry.
+The strict stage-gate workflow remains unchanged.
 
-It continuously maintains project context, receives or collects operational evidence, and activates bounded AI investigation when incidents occur.
+For every future stage:
 
-It helps developers answer:
+1. Define/freeze stage scope.
+2. Give coding agent a **PLAN-ONLY** prompt.
+3. Coding agent inspects repository and returns plan.
+4. Review plan critically.
+5. Correct scope/architecture if necessary.
+6. Explicitly approve plan.
+7. Send implementation prompt.
+8. Agent implements only the approved stage.
+9. Run automated tests.
+10. Perform manual verification.
+11. Keep journal status Pending until manual verification.
+12. User approves stage.
+13. Journal becomes Approved.
+14. Commit.
+15. Push.
+16. Only then begin the next stage.
+
+Coding agent rules:
 
 ```text
-What failed?
-Where did it fail?
-Why did it fail?
-What evidence supports that conclusion?
-What changed recently?
-Has this happened before?
-What remediation is proposed?
-What risks does it have?
-Did the approved remediation actually work?
+NEVER commit
+NEVER push
+NEVER jump ahead
+NEVER silently redefine architecture
+NEVER weaken tests to make implementation pass
 ```
 
-SentinelOps remains useful even when the developer is offline because repository context, telemetry ingestion, investigation, dashboard state, and notifications belong to the always-running platform rather than the developer’s editor.
+---
 
-Human developers retain control over remediation approval, merge, and production deployment.
+# 35. Coding-Agent Repository Inspection Rule
+
+This document defines architecture and product behavior.
+
+It does **not** invent repository details that must be discovered from the actual code.
+
+Before planning a stage, the coding agent must inspect:
+
+- current repository tree
+- `PROJECT.md`
+- `README`
+- existing application entrypoints
+- existing domain models
+- repository abstractions
+- configuration system
+- current test organization
+- journal
+- relevant completed-stage modules
+
+The agent must reuse existing conventions wherever practical.
+
+If the current repository conflicts with this document, the agent must report the conflict in the plan rather than silently choosing a direction.
+
+---
+
+# 36. Source of Truth
+
+`PROJECT.md` is the project source of truth for:
+
+- product identity
+- major architecture
+- stage definitions
+- stage boundaries
+- non-goals
+- workflow
+- safety principles
+
+The project journal records what was actually implemented and verified.
+
+Code and tests remain the source of truth for exact implemented interfaces.
+
+---
+
+# 37. Current Next Action
+
+The architecture in this document is now considered frozen enough to continue development.
+
+The next action is **not implementation**.
+
+The next action is:
+
+```text
+Coding Agent
+   ↓
+Read this PROJECT.md
+   ↓
+Inspect real repository
+   ↓
+Produce Stage 10 PLAN ONLY
+   ↓
+No code changes
+```
+
+The Stage 10 plan must resolve the implementation details intentionally left repository-dependent here, including:
+
+- exact module/file placement
+- exact `TelemetryEvent` fields/types
+- exact collector protocol
+- exact SQLite/storage abstraction and schema
+- exact rolling-buffer implementation
+- exact HTTP ingestion routes
+- exact Watcher lifecycle model
+- exact project/service identity integration
+- configuration keys
+- retry/error semantics
+- migration strategy if needed
+- Stage 10 test matrix
+- manual verification steps
+
+Only after the plan is reviewed and explicitly approved should Stage 10 implementation begin.

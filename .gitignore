@@ -48,5 +48,10 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Runtime log files
+# Runtime log and database files
 runtime/*.jsonl
+runtime/*.db
+runtime/*.db-wal
+runtime/*.db-shm
+
+

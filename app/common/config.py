@@ -35,6 +35,18 @@ class AppConfig:
     openai_api_key: Optional[str]
     git_context_limit: int
     rca_max_revisions: int
+    watcher_enabled: bool
+    watcher_log_path: str
+    watcher_poll_interval_seconds: float
+    watcher_buffer_capacity: int
+    watcher_db_path: str
+    watcher_db_retention_hours: int
+    watcher_db_max_events: int
+    watcher_health_check_interval_seconds: float
+    watcher_health_check_url: str
+    watcher_default_project_id: str
+    watcher_default_service: str
+    watcher_default_environment: str
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -43,6 +55,8 @@ class AppConfig:
         git_repo_path = os.getenv("GIT_REPOSITORY_PATH", ".")
         git_branch_repo_path = os.getenv("GIT_BRANCH_REPOSITORY_PATH") or git_repo_path
         git_base_branch = os.getenv("GIT_BASE_BRANCH", "main")
+        demo_log_path = os.getenv("DEMO_APP_LOG_PATH", "runtime/demo_app.jsonl")
+        watcher_log_path = os.getenv("WATCHER_LOG_PATH") or demo_log_path
 
         return cls(
             app_name=os.getenv("APP_NAME", "sentinelops"),
@@ -50,7 +64,7 @@ class AppConfig:
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             host=os.getenv("HOST", "127.0.0.1"),
             port=int(os.getenv("PORT", "8000")),
-            demo_app_log_path=os.getenv("DEMO_APP_LOG_PATH", "runtime/demo_app.jsonl"),
+            demo_app_log_path=demo_log_path,
             source_repository_path=os.getenv("SOURCE_REPOSITORY_PATH", "demo_app"),
             git_repository_path=git_repo_path,
             git_branch_repository_path=git_branch_repo_path,
@@ -60,6 +74,18 @@ class AppConfig:
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             git_context_limit=int(os.getenv("GIT_CONTEXT_LIMIT", "3")),
             rca_max_revisions=int(os.getenv("RCA_MAX_REVISIONS", "1")),
+            watcher_enabled=os.getenv("WATCHER_ENABLED", "true").lower() in ("true", "1", "yes"),
+            watcher_log_path=watcher_log_path,
+            watcher_poll_interval_seconds=float(os.getenv("WATCHER_POLL_INTERVAL_SECONDS", "1.0")),
+            watcher_buffer_capacity=int(os.getenv("WATCHER_BUFFER_CAPACITY", "1000")),
+            watcher_db_path=os.getenv("WATCHER_DB_PATH", "runtime/sentinelops.db"),
+            watcher_db_retention_hours=int(os.getenv("WATCHER_DB_RETENTION_HOURS", "24")),
+            watcher_db_max_events=int(os.getenv("WATCHER_DB_MAX_EVENTS", "10000")),
+            watcher_health_check_interval_seconds=float(os.getenv("WATCHER_HEALTH_CHECK_INTERVAL_SECONDS", "5.0")),
+            watcher_health_check_url=os.getenv("WATCHER_HEALTH_CHECK_URL", "http://127.0.0.1:8001/health"),
+            watcher_default_project_id=os.getenv("WATCHER_DEFAULT_PROJECT_ID", "sentinelops-demo"),
+            watcher_default_service=os.getenv("WATCHER_DEFAULT_SERVICE", "demo-app"),
+            watcher_default_environment=os.getenv("WATCHER_DEFAULT_ENVIRONMENT", "development"),
         )
 
 

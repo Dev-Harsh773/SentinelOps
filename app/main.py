@@ -11,8 +11,18 @@ from app.common.logging import logger
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown lifecycle events."""
     logger.info("Starting %s in %s environment", config.app_name, config.app_env)
-    yield
-    logger.info("Shutting down %s", config.app_name)
+    watcher_service = None
+    if config.watcher_enabled:
+        from app.watcher.dependencies import get_watcher_service
+        watcher_service = get_watcher_service()
+        await watcher_service.start()
+    try:
+        yield
+    finally:
+        if watcher_service:
+            await watcher_service.stop()
+        logger.info("Shutting down %s", config.app_name)
+
 
 
 def create_app() -> FastAPI:
