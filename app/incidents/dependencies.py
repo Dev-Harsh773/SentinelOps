@@ -17,3 +17,10 @@ def get_incident_repository() -> IncidentRepository:
 def get_incident_service() -> IncidentService:
     """Provide the incident service configured with the shared repository."""
     return IncidentService(repository=get_incident_repository())
+
+
+def reset_incident_state() -> None:
+    """Reset incident repository and clear listeners for test isolation."""
+    _shared_repository.clear()
+    service = get_incident_service()
+    service.clear_listeners()

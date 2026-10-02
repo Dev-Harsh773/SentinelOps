@@ -19,13 +19,24 @@ async def lifespan(app: FastAPI):
     from app.connectors.dependencies import get_connector_runtime
     connector_runtime = get_connector_runtime()
     await connector_runtime.start()
+    from app.notifications.dependencies import get_notification_runtime, get_notification_service
+    from app.incidents.dependencies import get_incident_service
+    notification_runtime = get_notification_runtime()
+    await notification_runtime.start()
+    incident_service = get_incident_service()
+    notification_service = get_notification_service()
+    incident_service.add_listener(notification_service)
     try:
         yield
     finally:
+        if notification_runtime:
+            await notification_runtime.stop()
         if connector_runtime:
             await connector_runtime.stop()
         if watcher_service:
             await watcher_service.stop()
+        from app.notifications.dependencies import close_notification_store
+        close_notification_store()
         from app.connectors.dependencies import close_connector_store
         close_connector_store()
         from app.projects.dependencies import close_project_store

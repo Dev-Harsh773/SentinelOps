@@ -1,12 +1,16 @@
 """Incident business logic service and lifecycle validation rules."""
 
+from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import List, Set, Tuple
+import logging
+from typing import List, Optional, Set, Tuple
 import uuid
 
 from app.incidents.models import Incident, IncidentStatus
 from app.incidents.repository import IncidentRepository
 from app.incidents.schemas import IncidentCreateRequest
+
+logger = logging.getLogger("sentinelops.incidents.service")
 
 
 class IncidentNotFoundError(Exception):
@@ -28,6 +32,22 @@ class InvalidStatusTransitionError(Exception):
         self.target_status = target_status
 
 
+class IncidentLifecycleListener(ABC):
+    """Observer contract for incident lifecycle events."""
+
+    @abstractmethod
+    def on_incident_created(self, incident: Incident) -> None:
+        """Invoked synchronously after an incident is durably created."""
+        pass
+
+    @abstractmethod
+    def on_incident_status_changed(
+        self, incident: Incident, old_status: IncidentStatus, new_status: IncidentStatus
+    ) -> None:
+        """Invoked synchronously after an incident status transition is durably persisted."""
+        pass
+
+
 # Strictly allowed transitions for Stage 1 incident lifecycle:
 # OPEN -> INVESTIGATING
 # OPEN -> RESOLVED
@@ -44,8 +64,27 @@ ALLOWED_TRANSITIONS: Set[Tuple[IncidentStatus, IncidentStatus]] = {
 class IncidentService:
     """Orchestrates incident domain operations, enforcing lifecycle and validation rules."""
 
-    def __init__(self, repository: IncidentRepository) -> None:
+    def __init__(
+        self,
+        repository: IncidentRepository,
+        listeners: Optional[List[IncidentLifecycleListener]] = None,
+    ) -> None:
         self._repository = repository
+        self._listeners: List[IncidentLifecycleListener] = list(listeners) if listeners else []
+
+    def add_listener(self, listener: IncidentLifecycleListener) -> None:
+        """Register a lifecycle listener idempotently."""
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: IncidentLifecycleListener) -> None:
+        """Remove a lifecycle listener."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def clear_listeners(self) -> None:
+        """Clear all registered listeners. Reserved strictly for test isolation."""
+        self._listeners.clear()
 
     def create_incident(self, request: IncidentCreateRequest) -> Incident:
         """Create and store a new incident with default OPEN status and UTC timestamps."""
@@ -62,7 +101,13 @@ class IncidentService:
             updated_at=now,
             project_id=request.project_id or "default",
         )
-        return self._repository.create(incident)
+        created = self._repository.create(incident)
+        for listener in self._listeners:
+            try:
+                listener.on_incident_created(created)
+            except Exception as exc:
+                logger.error("IncidentLifecycleListener error on creation: %s", exc, exc_info=True)
+        return created
 
     def get_incident(self, incident_id: str) -> Incident:
         """Retrieve an incident by ID or raise IncidentNotFoundError."""
@@ -84,6 +129,13 @@ class IncidentService:
         if transition not in ALLOWED_TRANSITIONS:
             raise InvalidStatusTransitionError(incident.status, new_status)
 
+        old_status = incident.status
         incident.status = new_status
         incident.updated_at = datetime.now(timezone.utc)
-        return self._repository.update(incident)
+        updated = self._repository.update(incident)
+        for listener in self._listeners:
+            try:
+                listener.on_incident_status_changed(updated, old_status, new_status)
+            except Exception as exc:
+                logger.error("IncidentLifecycleListener error on status update: %s", exc, exc_info=True)
+        return updated

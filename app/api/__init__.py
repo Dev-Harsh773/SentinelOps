@@ -10,6 +10,7 @@ from app.api.health import router as health_router
 from app.connectors.routes import router as connectors_router
 from app.incidents.routes import router as incidents_router
 from app.memory.routes import router as memory_router
+from app.notifications.routes import router as notifications_router
 from app.projects.routes import router as projects_router
 from app.remediation.routes import router as remediation_router
 from app.repository.routes import router as git_router
@@ -20,6 +21,7 @@ from app.watcher.routes import router as watcher_router
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(connectors_router)
+api_router.include_router(notifications_router)
 api_router.include_router(incidents_router)
 api_router.include_router(projects_router)
 api_router.include_router(telemetry_router)

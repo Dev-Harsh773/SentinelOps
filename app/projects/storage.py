@@ -41,11 +41,15 @@ class DuplicateWorkspacePathError(Exception):
 
 
 class ProjectHasActiveConnectorsError(Exception):
-    """Raised when a project cannot be deleted because dependent connectors exist."""
+    """Raised when a project cannot be deleted because dependent records exist."""
 
     def __init__(self, project_id: str, reason: str = "") -> None:
         super().__init__(f"Cannot delete project '{project_id}': dependent records exist. {reason}".strip())
         self.project_id = project_id
+
+
+# Alias for generalized dependent record foreign key conflicts (connectors, notifications, etc.)
+ProjectHasDependentRecordsError = ProjectHasActiveConnectorsError
 
 
 class SqliteProjectStore:

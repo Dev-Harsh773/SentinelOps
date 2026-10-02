@@ -1348,4 +1348,56 @@ Connect external deployment lifecycles and runtime telemetry platforms (CI/CD pi
   - Deleting connector allows project deletion; subsequent project GET returns 404.
 
 ### User Approval
+Approved
+
+---
+
+## Stage 15 — Notifications
+
+### Objective
+Add a durable notification subsystem that informs developers when SentinelOps already knows something meaningful happened. Delivers project-scoped event alerts via generic outbound webhooks (with HMAC signatures, bounded backoff, and crash-safe retry scheduling) and maintains a persistent in-product notification feed for development and future client apps (Stage 16 Windows Control Center, Stage 17 Android). Enforces strict event-loop safety, atomic single-worker claims, durable delivery snapshots, and foreign key retention rules.
+
+### Design Decisions
+- **Durable Store-and-Forward Architecture**: Every notification is durably committed to SQLite before network transmission is attempted. Local feed records transition immediately to `DELIVERED`, while webhook records start in `PENDING` with durable `next_attempt_at`.
+- **Event-Loop-Safe Synchronous Integration**: `IncidentService` and connector poller invoke lightweight synchronous observer listeners. Listeners evaluate subscriptions and persist notification records directly in SQLite without calling `asyncio.create_task()`, avoiding threadpool event-loop failures.
+- **Durable `next_attempt_at` Retry Scheduling**: Every webhook notification stores a persistent `next_attempt_at` deadline. Retries write their calculated exponential backoff timestamp directly to SQLite, preserving retry schedules across restarts without restarting backoffs from zero.
+- **Atomic Single-Worker Claims**: Background workers claim due rows using a conditional `UPDATE ... WHERE delivery_status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= :now)`. Exactly one worker claims any notification record before opening network sockets.
+- **Immutable Delivery Snapshots**: Every webhook record captures an immutable snapshot `delivery_config_json` at generation time. Live subscription mutations or deletions cannot strand or redirect pending notifications.
+- **Foreign Key Restrict vs History Preservation**: Live subscriptions enforce `FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE RESTRICT`, blocking project deletion while active notification configurations exist. Historical notification records store project IDs without foreign key constraints, allowing operational audit history to survive project deletion.
+- **Connector Operational Transition Policy**: Target failures (HTTP 4xx/5xx, timeouts) do not notify directly; they emit `HEALTH` telemetry to Watcher and flow through normal incident detection. Only internal connector operational status edge transitions (`HEALTHY -> ERRORED` at severity `HIGH`, `ERRORED -> HEALTHY` at severity `LOW`) generate notifications, using exact transition timestamps in dedup keys.
+- **Recipient Sanitization & Redaction**: URLs strip query parameters, credentials, and sensitive path tokens (e.g. `https://hooks.example.com/<redacted>`). API responses and logs mask all secrets and auth tokens.
+- **Historical Feed Queryability**: Notification feed queries by historical `project_id` succeed and return preserved history even after the project has been deleted.
+
+### Files Added / Changed
+- `app/notifications/__init__.py`: Exported notification models and storage classes.
+- `app/notifications/models.py`: Domain models, enums (`NotificationChannel`, `DeliveryStatus`, `ReadStatus`, `NotificationType`), Pydantic schemas, and recipient sanitization.
+- `app/notifications/store.py`: `SqliteNotificationStore` with `PRAGMA foreign_keys = ON;`, atomic conditional claims, retry timestamps, deduplication indexes, and CRUD operations.
+- `app/notifications/service.py`: `NotificationService` handling subscription CRUD, event-loop-safe lifecycle listeners, deduplication, snapshot capture, manual retry, and feed queries.
+- `app/notifications/delivery.py`: `NotificationDeliveryRuntime` with fixed worker concurrency (5), 1.0s periodic scan, thread-safe wake signal, HMAC-SHA256 signing, bounded retries (max 3), and startup crash recovery.
+- `app/notifications/routes.py`: FastAPI router implementing `/notifications` and `/notifications/subscriptions` REST endpoints.
+- `app/notifications/dependencies.py`: Dependency injection providers, thread-safe singletons, and test DB redirection (`set_custom_notification_db_path()`, `reset_notification_state()`).
+- `app/incidents/service.py`: Added `IncidentLifecycleListener` observer interface, registration methods, and synchronous lifecycle hooks in `create_incident()` and `update_status()`.
+- `app/incidents/dependencies.py`: Added `reset_incident_state()` to clear repository and listeners for test isolation.
+- `app/connectors/poller.py`: Added operational transition hook at lines 156 and 208 in `ConnectorPollerRuntime._poll_once()`.
+- `app/api/__init__.py`: Registered `notifications_router` under aggregated API router.
+- `app/main.py`: Wired `NotificationDeliveryRuntime` startup/shutdown, store closure, and incident listener registration into FastAPI lifespan.
+- `app/projects/storage.py`: Added `ProjectHasDependentRecordsError` alias and generalized deletion error message.
+- `tests/test_notifications_store.py`: Unit tests for store CRUD, atomic claims, retry deadlines, foreign key restrict, history preservation, and recovery.
+- `tests/test_notifications_service.py`: Unit tests for subscription matching, severity filtering, dedup suppression, listener safety, and snapshots.
+- `tests/test_notifications_delivery.py`: Unit tests for webhook dispatch, HMAC signing, 5xx backoff, terminal 4xx, header merge precedence, and diagnostic ping.
+- `tests/test_notifications_api.py`: Acceptance tests for subscription/feed endpoints, secret masking, history survival after project deletion, and incident integration.
+
+### Verification
+- **Automated Verification**:
+  - Executed focused notification test suite `python -m pytest (Get-Item tests/test_notifications*.py) -v`: all 30 tests passed in 2.16s.
+  - Executed full project regression suite `python -m pytest -v`: all 336 tests passed in 48.99s with 100% pass rate (306 baseline tests across Stages 0–14 + 30 Stage 15 tests; zero regressions; zero warnings).
+  - Explicit production DB isolation test (`test_production_db_isolation`) proves `runtime/sentinelops.db` row counts and project list remain completely unchanged before and after mutative Stage 15 operations, test dependencies are redirected to `tmp_path / "sentinelops_test.db"`, and test project IDs are never written to production storage.
+  - Explicit duplicate listener registration and reset test (`test_duplicate_listener_registration_and_reset`) proves registering `NotificationService` multiple times does not duplicate callbacks, `reset_incident_state()` clears listeners, re-registering keeps exactly 1 listener, and 1 logical incident event generates exactly 1 notification.
+  - Verified atomic single-worker claims, durable `next_attempt_at`, and crash recovery preserving attempt count.
+  - Verified foreign key `ON DELETE RESTRICT` on subscriptions blocking project deletion.
+  - Verified preservation of historical notifications and historical feed queryability after project deletion.
+  - Verified Option B deduplication and exact transition timestamp deduplication.
+  - Verified secret masking in API responses and preservation on update.
+
+### User Approval
 Pending Verification

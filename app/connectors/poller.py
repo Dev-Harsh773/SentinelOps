@@ -153,12 +153,21 @@ class ConnectorPollerRuntime:
                     }
 
                 # Success: target responded as expected
+                old_op = health.operational_status
                 health.operational_status = OperationalStatus.HEALTHY
                 health.target_status = TargetStatus.HEALTHY
                 health.consecutive_operational_errors = 0
                 health.last_success_at = now
                 health.last_operational_error = None
                 health.last_target_error = None
+
+                if old_op in (OperationalStatus.DEGRADED, OperationalStatus.ERRORED):
+                    self._notify_operational_transition(
+                        connector=connector,
+                        old_status=old_op,
+                        new_status=OperationalStatus.HEALTHY,
+                        transition_time=now,
+                    )
 
                 if connector.config.emit_health_telemetry:
                     event = normalize_poller_result(
@@ -203,10 +212,21 @@ class ConnectorPollerRuntime:
 
         except Exception as exc:
             # Operational Connector Error: internal software defect, client crash, SQLite failure
+            old_op = health.operational_status
             latency_ms = (time.perf_counter() - start_time) * 1000.0
             health.consecutive_operational_errors += 1
             health.operational_status = OperationalStatus.ERRORED
             health.last_operational_error = str(exc)
+
+            if old_op == OperationalStatus.HEALTHY:
+                self._notify_operational_transition(
+                    connector=connector,
+                    old_status=old_op,
+                    new_status=OperationalStatus.ERRORED,
+                    transition_time=now,
+                    error_message=str(exc),
+                )
+
             # Notice: Target status is NOT falsely declared unhealthy, and NO fake target telemetry is emitted!
             self._store.update_health(health)
             return {
@@ -215,3 +235,32 @@ class ConnectorPollerRuntime:
                 "error": str(exc),
                 "consecutive_operational_errors": health.consecutive_operational_errors,
             }
+
+    def _notify_operational_transition(
+        self,
+        connector: Connector,
+        old_status: OperationalStatus,
+        new_status: OperationalStatus,
+        transition_time: datetime,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Dispatch operational health transition notification."""
+        try:
+            from app.notifications.dependencies import get_notification_service
+
+            service = get_notification_service()
+            service.on_connector_operational_transition(
+                connector_id=connector.connector_id,
+                project_id=connector.project_id,
+                old_status=old_status,
+                new_status=new_status,
+                transition_time=transition_time,
+                error_message=error_message,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to dispatch connector operational notification for %s: %s",
+                connector.connector_id,
+                exc,
+                exc_info=True,
+            )
