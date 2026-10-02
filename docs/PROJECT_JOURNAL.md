@@ -1400,4 +1400,79 @@ Add a durable notification subsystem that informs developers when SentinelOps al
   - Verified secret masking in API responses and preservation on update.
 
 ### User Approval
-Pending Verification
+Approved
+
+---
+
+## Stage 16 — Windows Control Center
+
+### Objective
+Build the first Windows desktop Control Center for SentinelOps as a pure, lightweight, operator-facing client. Connects to the SentinelOps backend over HTTP REST APIs, visualizes operational health across onboarded projects, inspects incident details with attached runtime evidence, surfaces read-only AI investigation and remediation analyses, provides an interactive notification feed with read tracking and retry actions, and monitors telemetry connectors.
+
+### Design Decisions
+- **Pure Thin Client**: Zero direct database access (`runtime/sentinelops.db` is never opened). Communicates strictly via HTTP REST endpoints (`desktop.api.client.SentinelOpsClient`).
+- **Server-Confirmed State Mutations Only**: Zero optimistic UI state mutation. All mutating operations (marking notifications as read, bulk mark-all-read, incident status transitions, workspace reindexing, connector testing) await authoritative HTTP response from backend before updating UI widgets.
+- **Authoritative Backend Business Logic**: Zero duplication of incident lifecycle state machines or notification deduplication rules. Backend remains the authoritative validator.
+- **Backend Changes Frozen at Zero**: Consumes existing `GET /incidents` (`List[IncidentResponse]`) as-is; client scopes incidents by active `project_id` without backend modifications.
+- **Desktop-Local DTO Alignment**: Defined local DTOs in `desktop/api/models.py` mirroring verified backend schemas 1:1 without importing `app.*` backend packages. Zero invented or inferred fields.
+- **Single Persistent Configuration Path**: Configuration persists exclusively at `%APPDATA%/SentinelOps/desktop_config.json`, with environment variable overrides (`SENTINELOPS_API_URL`, `SENTINELOPS_POLL_INTERVAL`) for development and tests.
+- **Session-Only In-Memory Cache**: All cached API responses exist solely in memory for the active desktop session. When backend is unreachable, data is displayed as read-only, non-authoritative, and visibly timestamped (`Cached as of HH:MM:SS UTC`).
+- **Efficient Single-Stream Notification Polling**: Combines feed fetching and unread tracking into a single paginated query (`GET /notifications?project_id=...&limit=50&offset=0`), deriving unread counts directly for the active batch without redundant requests.
+- **Clean Window Termination**: No system tray or background resident behavior. Closing the window immediately stops background polling threads and exits cleanly with exit code 0.
+- **Strict Stage Boundaries**: Zero Stage 17 (Android/mobile) code and zero Stage 18 (safe action execution) code. Investigation and remediation views are strictly read-only decision-support surfaces.
+
+### Files Added / Changed
+- `desktop/__init__.py`: Desktop package initialization.
+- `desktop/config.py`: Desktop configuration manager for `%APPDATA%/SentinelOps/desktop_config.json` with env overrides.
+- `desktop/api/__init__.py`: Exported desktop API client and exceptions.
+- `desktop/api/exceptions.py`: Typed client exceptions (`BackendUnavailableError`, `NotFoundError`, `ConflictError`, `ValidationError`, `ServerError`).
+- `desktop/api/models.py`: Local DTOs mirroring backend response schemas 1:1 (`ProjectDTO`, `IncidentDTO`, `NotificationDTO`, `ConnectorDTO`, `ProjectKnowledgeDTO`, etc.).
+- `desktop/api/client.py`: Synchronous HTTP client wrapping `httpx.Client` with timeout handling and error mapping.
+- `desktop/state/__init__.py`: Exported state manager and signal bus.
+- `desktop/state/signals.py`: Central `AppSignals` Qt event bus.
+- `desktop/state/app_state.py`: Singleton `AppState` managing in-memory session cache and active project filtering.
+- `desktop/workers/__init__.py`: Exported worker components.
+- `desktop/workers/task_runner.py`: Thread pool task runner (`TaskRunner`) for asynchronous user actions.
+- `desktop/workers/poller.py`: Background polling thread (`BackgroundPoller`) with failure backoff and recovery.
+- `desktop/ui/__init__.py`: UI package initialization.
+- `desktop/ui/styles.py`: Enterprise dark theme QSS stylesheet (`DARK_THEME_QSS`).
+- `desktop/ui/components/__init__.py`: Exported UI components.
+- `desktop/ui/components/status_badge.py`: Color-coded status badge pills (`StatusBadge`).
+- `desktop/ui/components/loading_overlay.py`: Non-blocking loading indicator (`LoadingOverlay`).
+- `desktop/ui/components/toast.py`: Floating in-app toast notices (`ToastNotification`).
+- `desktop/ui/components/header.py`: Top navigation bar (`HeaderBar`) with project switcher and health indicator.
+- `desktop/ui/components/sidebar.py`: Vertical navigation rail (`SidebarRail`).
+- `desktop/ui/views/__init__.py`: Exported views.
+- `desktop/ui/views/overview_view.py`: Operational dashboard (`OverviewView`).
+- `desktop/ui/views/incidents_view.py`: Incident list and split-pane detail drawer (`IncidentsView`).
+- `desktop/ui/views/notifications_view.py`: Activity feed with read tracking and retry (`NotificationsView`).
+- `desktop/ui/views/connectors_view.py`: Connector monitoring and diagnostic pings (`ConnectorsView`).
+- `desktop/ui/views/knowledge_view.py`: Knowledge base status and reindexing (`KnowledgeView`).
+- `desktop/ui/views/settings_view.py`: Endpoint configuration and live testing (`SettingsView`).
+- `desktop/ui/main_window.py`: Primary shell window (`MainWindow`).
+- `desktop/main.py`: Desktop executable entry point.
+- `tests/desktop/__init__.py`: Dedicated desktop test package.
+- `tests/desktop/test_desktop_config.py`: Unit tests for configuration and APPDATA path.
+- `tests/desktop/test_desktop_models.py`: Unit tests for DTO deserialization and schema alignment.
+- `tests/desktop/test_desktop_api_client.py`: Unit tests for HTTP client operations and error mapping.
+- `tests/desktop/test_desktop_state.py`: Unit tests for state management, active project filtering, and unread counts.
+- `tests/desktop/test_desktop_views.py`: Headless offscreen tests for PyQt6 widgets, navigation, and window assembly.
+- `tests/desktop/test_desktop_concurrency_stress.py`: Comprehensive concurrency and async lifecycle stress tests covering overlapping actions, rapid navigation, feed rebuilds, and project switching.
+
+### Verification
+- **Automated Verification**:
+  - Executed dedicated desktop test suite `python -m pytest tests/desktop/ -v`: all 43 tests passed in 2.50s.
+  - Executed full project regression suite `python -m pytest -v`: all 379 tests passed in 48.09s with 100% pass rate (336 baseline tests across Stages 0–15 + 43 Stage 16 desktop tests; zero regressions; zero warnings).
+  - Verified pure HTTP client architecture with zero backend package imports.
+  - Verified server-confirmed mutations and unread count derivation for the active batch.
+  - Verified headless execution under `QT_QPA_PLATFORM=offscreen`.
+- **Manual Verification Defect Fixes & Hardening**:
+  - **Incident Lifecycle State-Awareness**: Wired `_update_action_buttons` to strictly reflect lifecycle stages (OPEN: Investigate & Resolve enabled, Close hidden; INVESTIGATING: Resolve enabled, Investigate hidden; RESOLVED: Close enabled, others hidden; CLOSED: all actions hidden).
+  - **Offline Mutating Controls & Pre-HTTP Safety Guards**: Connected `connection_changed` across all views to immediately disable mutating and diagnostic controls (`IncidentsView` lifecycle actions, `NotificationsView` mark read/mark all/retry, `ConnectorsView` test buttons, `KnowledgeView` reindex workspace, `HeaderBar` refresh) with `"Unavailable while offline"` tooltips. Added pre-HTTP client guards that emit `"Action Blocked"` warnings without opening network connections.
+  - **Project Switcher Text Clipping**: Widened `project_combo` minimum width to 320px, set `AdjustToContents` policy, and bound full item tooltips to prevent truncation of lengthy project names.
+  - **Incident Table Column Proportions**: Configured explicit interactive column widths (Severity: 85, Status: 115, Title: Stretch, Service: 110, Env: 75, Created: 130) and expanded master splitter size to 700px.
+  - **Async UI Concurrency & Widget Lifecycle Hardening**: Audited all background task executions across `ConnectorsView`, `NotificationsView`, `IncidentsView`, `KnowledgeView`, and `SettingsView`. Completely eliminated stale `QWidget`/`QPushButton` captures in closures. Implemented stable-ID state tracking (`_testing_connector_ids`, `_in_flight_reads`, `_in_flight_retries`, `_reindexing_projects`, `_transitioning_incident_ids`, `_test_in_flight`), guarded duplicate same-action triggers, discarded stale artifact fetches on selection/project switches, and ensured all UI updates occur via current-view re-rendering without accessing deleted Qt C++ wrappers.
+  - **Stress-Style Concurrency Regression Suite**: Added `tests/desktop/test_desktop_concurrency_stress.py` providing automated verification for: (1) Connector test in flight + navigation + refresh; (2) Reindex in flight + navigation + project switch; (3) Notification mark-read/retry in flight + feed rebuild; (4) Incident status transition in flight + incident/project switch; (5) Settings connection test in flight + navigation; and (6) Multiple unrelated async operations overlapping.
+
+### User Approval
+Approved
