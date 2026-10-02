@@ -13,6 +13,7 @@ from app.projects.schemas import ProjectRegisterRequest
 from app.projects.storage import (
     DuplicateProjectIdError,
     DuplicateWorkspacePathError,
+    ProjectHasActiveConnectorsError,
     ProjectNotFoundError,
     SqliteProjectStore,
 )

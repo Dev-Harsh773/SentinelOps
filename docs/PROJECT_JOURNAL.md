@@ -1267,3 +1267,85 @@ Elevate repository awareness in SentinelOps from a single global configured path
 ### User Approval
 Approved
 
+---
+
+## Stage 14 — Deployment / Telemetry Connectors
+
+### Objective
+Connect external deployment lifecycles and runtime telemetry platforms (CI/CD pipelines, synthetic health observers, metrics platforms, runtime monitoring systems) into SentinelOps' proactive incident detection, investigation, and operational memory pipeline. Ensure strict project scoping, credential redaction, foreign key data integrity, Option B at-least-once deduplication semantics, and target vs operational health classification.
+
+### Design Decisions
+- **Connector Type Scope**: Formally restricted to two core implementations: `http_poller` and `webhook`. Provider-specific adapters (GitHub, GitLab, Datadog, ArgoCD, Kubernetes) are deferred to future expansion. A generic normalization layer converts external payloads into the canonical Stage 10 `TelemetryEvent` contract.
+- **Canonical Telemetry Reuse**: Reused the exact frozen `TelemetryEvent` dataclass from `app/watcher/models.py`. Did not introduce replacement contracts. All events feed directly into `WatcherService.ingest_event()`.
+- **Shared SQLite Persistence & Connection Pragma**: Connectors share the exact metadata SQLite database as projects (`runtime/sentinelops.db` in production; redirected to `tmp_path / "sentinelops_test.db"` in automated tests). Both `SqliteProjectStore` and `SqliteConnectorStore` enforce `PRAGMA foreign_keys = ON;` on every SQLite connection.
+- **Foreign Key ON DELETE RESTRICT & Domain Decoupling**: Database schema enforces `FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE RESTRICT`. Deleting a project with child connectors raises `sqlite3.IntegrityError`, which `SqliteProjectStore` catches and translates to `ProjectHasActiveConnectorsError`. `ProjectService` re-raises this domain error without importing `ConnectorStore`, and FastAPI translates it to `HTTP 409 Conflict`.
+- **Secret Redaction and Masking Boundary**: Plaintext local SQLite persistence with strict API/log/diagnostic redaction (encryption at rest deferred to Stage 20). API responses mask credentials (`sk-****-1234` or `[REDACTED]`). Updates with masked values preserve stored credentials.
+- **Option B Deduplication Guarantee**: Per-connector async lock serializes delivery. Checks `connector_dedup_log`. Calls `WatcherService.ingest_event()` first. Only after successful return commits `(connector_id, external_event_id)` into SQLite. Guarantees at-least-once delivery; normal retries with stable external IDs are suppressed; process crash before dedup commit may re-process on retry (exactly-once is explicitly not guaranteed).
+- **Explicit Ingestion Endpoint**: Restricted to single route `POST /connectors/{connector_id}/ingest`, eliminating ambiguous global header matching.
+- **Failure Classification**: Distinguishes Target Health Failures (HTTP 4xx/5xx, timeouts, connection refused, DNS errors — emits HEALTH failure telemetry, marks target unhealthy, does not back off poller loop) from Operational Connector Errors (internal code defect, local SQLite write lock — degrades connector health, applies exponential backoff, does not emit fake target telemetry).
+
+### Files Added / Changed
+- `app/connectors/__init__.py`: Package initialization.
+- `app/connectors/models.py`: Data models and schemas (`Connector`, `ConnectorConfig`, `ConnectorHealth`, `ConnectorType`, `WebhookIngestRequest`, `ConnectorResponse`).
+- `app/connectors/store.py`: `SqliteConnectorStore` with connection-scoped `PRAGMA foreign_keys = ON;`, tables `connectors`, `connector_dedup_log`, `connector_health`, and cascade/restriction support.
+- `app/connectors/auth.py`: HMAC signature verification (`X-Hub-Signature-256`, etc.) and Bearer token validation.
+- `app/connectors/redaction.py`: Recursive secret scrubbing and API response masking engine.
+- `app/connectors/normalizer.py`: Normalizer mapping external webhook and poller bodies into canonical Stage 10 `TelemetryEvent`.
+- `app/connectors/poller.py`: `ConnectorPollerRuntime` background async worker managing polling intervals and backoff.
+- `app/connectors/service.py`: `ConnectorService` coordinating business logic, auth, Option B deduplication, and Watcher delegation.
+- `app/connectors/dependencies.py`: Dependency injection providers with test DB redirection (`set_custom_connector_db_path`).
+- `app/connectors/routes.py`: FastAPI router for `/connectors` CRUD, `/ingest`, `/collect`, and `/test`.
+- `app/api/__init__.py`: Registered `connectors_router` in aggregated API router.
+- `app/main.py`: Hooked `ConnectorPollerRuntime` startup/shutdown and `close_connector_store()` into FastAPI `lifespan`.
+- `app/projects/storage.py`: Enabled `PRAGMA foreign_keys = ON;` in `_init_db()`, added `ProjectHasActiveConnectorsError`, caught `IntegrityError` in `delete_project()`.
+- `app/projects/service.py`: Imported `ProjectHasActiveConnectorsError` and allowed propagation on project delete.
+- `app/projects/routes.py`: Added `DELETE /projects/{project_id}` endpoint with HTTP 409 Conflict handling.
+- `tests/test_connectors_store.py`: Unit tests for store CRUD, foreign keys, cascades, and dedup.
+- `tests/test_connectors_service.py`: Tests for Option B deduplication, redaction, auth, and secret preservation.
+- `tests/test_connectors_poller.py`: Tests for target vs operational failure classification, recovery, and restart task lifecycle.
+- `tests/test_connectors_api.py`: Full API acceptance suite with isolated `tmp_path` test database.
+
+### Verification
+- **Automated Verification**:
+  - Executed focused connector test suite `python -m pytest (Get-Item tests/test_connectors*.py) -v`: all 33 tests passed in 6.73s (0 warnings).
+  - Executed full project regression suite `python -m pytest -v`: all 306 tests passed in 50.99s with 100% pass rate (273 baseline tests across Stages 0–13 + 33 Stage 14 tests; zero regressions; zero warnings).
+  - Verified connector CRUD lifecycle, 404 for unknown connector, 404 for unknown project.
+  - Verified foreign key ON DELETE RESTRICT and project deletion 409 Conflict while connectors exist.
+  - Verified Option B deduplication: stable external ID suppression, no-ID at-least-once delivery, Watcher failure non-persistence.
+  - Verified recursive secret redaction and masked secret update preservation.
+  - Verified poller target error emits HEALTH telemetry without operational backoff; operational error degrades connector health without fake target telemetry.
+  - Verified poller background task enable/disable lifecycle across simulated restart.
+  - Verified test DB isolation ensures automated tests never mutate `runtime/sentinelops.db`.
+
+- **Runtime Blockers Discovered & Hardened During Real Manual Verification**:
+  - Lifespan dependency bug: direct lifespan call received FastAPI `Depends` object instead of concrete connector store/runtime; fixed by resolving concrete instance directly.
+  - Async lifecycle bug: synchronous connector API route executed in worker thread and called `asyncio.create_task`, causing `RuntimeError: no running event loop`.
+  - Zombie connector persistence: three zombie Stage 14 manual connector rows were found because persistence occurred before runtime activation failure.
+  - Connector runtime lifecycle moved to async request/service paths (`async def` routes and async service methods on the main event loop).
+  - Create/update compensation rollback added: persists only on successful runtime activation; rolls back store mutation if runtime task startup fails.
+  - Database cleanup: zombie Stage 14 manual connector artifacts removed from `runtime/sentinelops.db` without touching unrelated project data.
+
+- **Completed Manual Verification**:
+  - Real Uvicorn startup clean with shared runtime;
+  - Webhook and HTTP poller creation 201;
+  - Secret redaction verified;
+  - Bad auth 401 without connector degradation;
+  - Valid webhook ingest 200;
+  - Connector-bound `project_id` overrides spoofed payload project ID;
+  - Stage 14 Beta incident created and cross-project contamination = 0;
+  - Stable external ID duplicate suppressed with incident count unchanged;
+  - Events without external IDs are processed independently;
+  - Disabled webhook ingest 409;
+  - Webhook collect guard 400;
+  - HTTP poller webhook-ingest guard 400;
+  - Unreachable HTTP target classified as target unhealthy with 0 operational errors;
+  - Disabling poller stops `last_poll_at`;
+  - Re-enabling resumes polling;
+  - SQLite persistence verified;
+  - Project deletion with dependent connector returns 409;
+  - Restart restores active HTTP poller while webhook remains passive;
+  - `/test` diagnostic succeeds without incrementing operational error counters;
+  - Deleting connector allows project deletion; subsequent project GET returns 404.
+
+### User Approval
+Pending Verification

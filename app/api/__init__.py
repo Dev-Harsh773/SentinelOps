@@ -7,6 +7,7 @@ without turning main.py into a large, tightly coupled file.
 from fastapi import APIRouter
 from app.agents.routes import router as investigation_router
 from app.api.health import router as health_router
+from app.connectors.routes import router as connectors_router
 from app.incidents.routes import router as incidents_router
 from app.memory.routes import router as memory_router
 from app.projects.routes import router as projects_router
@@ -18,6 +19,7 @@ from app.watcher.routes import router as watcher_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
+api_router.include_router(connectors_router)
 api_router.include_router(incidents_router)
 api_router.include_router(projects_router)
 api_router.include_router(telemetry_router)

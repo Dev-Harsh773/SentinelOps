@@ -22,6 +22,7 @@ from app.projects.service import (
 from app.projects.storage import (
     DuplicateProjectIdError,
     DuplicateWorkspacePathError,
+    ProjectHasActiveConnectorsError,
     ProjectNotFoundError,
 )
 from app.retrieval.schemas import SearchRequest, SearchResponse
@@ -79,6 +80,26 @@ def get_project(
         return ProjectResponse.model_validate(project)
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an onboarded project",
+)
+def delete_project(
+    project_id: str,
+    service: ProjectService = Depends(get_project_service),
+) -> None:
+    """Delete a project if no active connectors or foreign key references exist."""
+    try:
+        deleted = service.delete_project(project_id)
+        if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found.")
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ProjectHasActiveConnectorsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
 
 @router.post(

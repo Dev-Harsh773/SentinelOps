@@ -40,6 +40,14 @@ class DuplicateWorkspacePathError(Exception):
         self.existing_project_id = existing_project_id
 
 
+class ProjectHasActiveConnectorsError(Exception):
+    """Raised when a project cannot be deleted because dependent connectors exist."""
+
+    def __init__(self, project_id: str, reason: str = "") -> None:
+        super().__init__(f"Cannot delete project '{project_id}': dependent records exist. {reason}".strip())
+        self.project_id = project_id
+
+
 class SqliteProjectStore:
     """Manages durable SQLite storage for onboarded Project entities."""
 
@@ -61,6 +69,7 @@ class SqliteProjectStore:
         """Create projects table and performance indices if they do not exist."""
         with self._lock:
             cursor = self._conn.cursor()
+            cursor.execute("PRAGMA foreign_keys = ON;")
             if self._db_path != ":memory:":
                 cursor.execute("PRAGMA journal_mode=WAL;")
                 cursor.execute("PRAGMA synchronous=NORMAL;")
@@ -245,6 +254,9 @@ class SqliteProjectStore:
                 cursor.execute("DELETE FROM projects WHERE project_id = ?;", (project_id,))
                 self._conn.commit()
                 return cursor.rowcount > 0
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                raise ProjectHasActiveConnectorsError(project_id, str(exc)) from exc
             except Exception:
                 self._conn.rollback()
                 raise

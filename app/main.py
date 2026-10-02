@@ -16,11 +16,18 @@ async def lifespan(app: FastAPI):
         from app.watcher.dependencies import get_watcher_service
         watcher_service = get_watcher_service()
         await watcher_service.start()
+    from app.connectors.dependencies import get_connector_runtime
+    connector_runtime = get_connector_runtime()
+    await connector_runtime.start()
     try:
         yield
     finally:
+        if connector_runtime:
+            await connector_runtime.stop()
         if watcher_service:
             await watcher_service.stop()
+        from app.connectors.dependencies import close_connector_store
+        close_connector_store()
         from app.projects.dependencies import close_project_store
         close_project_store()
         logger.info("Shutting down %s", config.app_name)
