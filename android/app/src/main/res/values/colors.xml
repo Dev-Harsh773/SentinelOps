@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#1E293B</color>
+    <color name="primary_dark">#0F172A</color>
+    <color name="accent">#2563EB</color>
+    <color name="background">#F8FAFC</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_variant">#F1F5F9</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#64748B</color>
+    <color name="text_muted">#94A3B8</color>
+    <color name="border">#E2E8F0</color>
+
+    <!-- Operational State -->
+    <color name="status_online">#16A34A</color>
+    <color name="status_online_bg">#DCFCE7</color>
+    <color name="status_offline">#DC2626</color>
+    <color name="status_offline_bg">#FEE2E2</color>
+
+    <!-- Severity Levels -->
+    <color name="severity_critical">#DC2626</color>
+    <color name="severity_critical_bg">#FEE2E2</color>
+    <color name="severity_high">#EA580C</color>
+    <color name="severity_high_bg">#FFEDD5</color>
+    <color name="severity_medium">#CA8A04</color>
+    <color name="severity_medium_bg">#FEF9C3</color>
+    <color name="severity_low">#16A34A</color>
+    <color name="severity_low_bg">#DCFCE7</color>
+
+    <!-- Incident Status -->
+    <color name="incident_open">#DC2626</color>
+    <color name="incident_investigating">#2563EB</color>
+    <color name="incident_resolved">#16A34A</color>
+    <color name="incident_closed">#64748B</color>
+
+    <!-- Notification & Log levels -->
+    <color name="level_error">#DC2626</color>
+    <color name="level_warn">#EA580C</color>
+    <color name="level_info">#2563EB</color>
+    <color name="level_debug">#64748B</color>
+</resources>

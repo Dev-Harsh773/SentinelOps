@@ -1,4 +1,4 @@
-# SentinelOps — Project Journal
+﻿# SentinelOps — Project Journal
 
 This living journal documents engineering decisions, problem-solving history, and stage completion records across the lifecycle of SentinelOps.
 
@@ -1473,6 +1473,103 @@ Build the first Windows desktop Control Center for SentinelOps as a pure, lightw
   - **Incident Table Column Proportions**: Configured explicit interactive column widths (Severity: 85, Status: 115, Title: Stretch, Service: 110, Env: 75, Created: 130) and expanded master splitter size to 700px.
   - **Async UI Concurrency & Widget Lifecycle Hardening**: Audited all background task executions across `ConnectorsView`, `NotificationsView`, `IncidentsView`, `KnowledgeView`, and `SettingsView`. Completely eliminated stale `QWidget`/`QPushButton` captures in closures. Implemented stable-ID state tracking (`_testing_connector_ids`, `_in_flight_reads`, `_in_flight_retries`, `_reindexing_projects`, `_transitioning_incident_ids`, `_test_in_flight`), guarded duplicate same-action triggers, discarded stale artifact fetches on selection/project switches, and ensured all UI updates occur via current-view re-rendering without accessing deleted Qt C++ wrappers.
   - **Stress-Style Concurrency Regression Suite**: Added `tests/desktop/test_desktop_concurrency_stress.py` providing automated verification for: (1) Connector test in flight + navigation + refresh; (2) Reindex in flight + navigation + project switch; (3) Notification mark-read/retry in flight + feed rebuild; (4) Incident status transition in flight + incident/project switch; (5) Settings connection test in flight + navigation; and (6) Multiple unrelated async operations overlapping.
+
+### User Approval
+Approved
+
+---
+
+## Stage 17 — Android Mobile Client
+
+### Objective
+Build a native Android thin client for SentinelOps in 100% Java 17 using Android Views with XML layouts, Material 3, ViewModel + LiveData, and Retrofit + OkHttp + Gson. Provide on-call engineers with fast mobile triage, operational health monitoring, alert visibility, diagnostic testing, and server-confirmed incident lifecycle transitions without duplicating backend business logic or modifying backend code.
+
+### Design Decisions
+- **Pure Java 17 Toolchain**: 100% Java source files; zero Kotlin source files or dependencies. Built with AGP 8.7.3, Gradle 8.11.1, compileSdk 35, targetSdk 34, and minSdk 26.
+- **Android Architecture Components**: Single-Activity architecture (`MainActivity`) hosting AndroidX `NavHostFragment` wired to `BottomNavigationView` with 5 main destinations: Overview, Incidents, Connectors, Notifications, Settings. ViewBinding enabled across all screens with clean lifecycle nullification in `onDestroyView()` and `getViewLifecycleOwner()` observations.
+- **Strict Public API Adherence**: Consumes verified public-facing backend endpoints matching desktop Stage 16 contracts:
+  - Health: `GET /health`
+  - Projects: `GET /projects`, `GET /projects/{id}`
+  - Incidents: `GET /incidents`, `GET /incidents/{id}`, `PATCH /incidents/{id}/status`
+  - Evidence: `GET /incidents/{id}/evidence`
+  - Investigation: `GET /incidents/{id}/investigation`
+  - Remediation: `GET /incidents/{id}/remediation`
+  - Connectors: `GET /connectors`, `POST /connectors/{id}/test`
+  - Notifications: `GET /notifications`, `PATCH /notifications/{id}/read`, `POST /notifications/mark-all-read`, `POST /notifications/{id}/retry`
+- **Zero Backend Changes**: Zero modifications to `app/` backend code; 100% compatibility with existing backend contracts.
+- **Authoritative ONLINE/OFFLINE Semantics**: Global connectivity state is governed strictly by the reachability of `GET /health`. Domain HTTP errors (400, 404, 409, 422, 500) are presented to the operator as domain error notices and do NOT flip the global connection state to OFFLINE. Transport-level connection/timeout failures trigger an immediate background health probe.
+- **State-Aware Incident Lifecycle Controls**: Incident detail view dynamically presents lifecycle mutation buttons reflecting server-authoritative states (OPEN: Investigate and Resolve; INVESTIGATING: Resolve; RESOLVED: Close; CLOSED: none). All mutating buttons disable automatically when backend is OFFLINE or an async mutation is in-flight.
+- **Concurrency & Widget Lifecycle Invariants**: Eliminated all stale View/Widget captures in async callbacks. Implemented thread-safe in-flight operation tracking with stable IDs in ViewModels (`inFlightOperations`), preventing duplicate start events and dropping stale responses.
+- **Conservative Foreground-Only Polling**: Operational polling runs exclusively when the application is active in the foreground (selectable: 30s, 60s, or Manual Only), automatically paused on `ON_PAUSE`/`ON_STOP` via `ProcessLifecycleOwner`. Zero background services or alarm managers.
+- **Build-Type Network Security Separation**: Debug builds enable cleartext HTTP (`android:usesCleartextTraffic="true"`) for local emulator loopback (`10.0.2.2`) and LAN development. Release builds strictly enforce HTTPS with cleartext traffic disabled.
+- **Batch Unread Labeling**: Notification feed unread counts derived from `GET /notifications?limit=50` are explicitly labeled as `"Unread in loaded batch"` to avoid misleading operators regarding global project totals.
+- **Strict Stage 18 Boundaries**: Remediation proposals are strictly read-only decision-support views (target files, proposed changes, rationale, risks, validation steps). Review decision submissions and branch creation actions are deferred to Stage 18.
+
+### Files Added / Changed
+- `android/settings.gradle`: Root settings defining repositories and app module inclusion.
+- `android/build.gradle`: Root buildscript configuring AGP 8.7.3.
+- `android/gradle.properties`: Build environment configuring JDK 17 and AndroidX.
+- `android/local.properties`: Android SDK path reference.
+- `android/gradlew`, `android/gradlew.bat`, `android/gradle/wrapper/*`: Gradle 8.11.1 distribution wrapper.
+- `android/app/build.gradle`: App module dependencies, compile options (Java 17), ViewBinding, and test runners.
+- `android/app/proguard-rules.pro`: Keep rules for Gson serialized models.
+- `android/app/src/main/AndroidManifest.xml`: Application manifest with INTERNET and NETWORK_STATE permissions, HTTPS enforcement.
+- `android/app/src/main/res/xml/network_security_config.xml`: Release network security configuration (HTTPS enforced).
+- `android/app/src/debug/AndroidManifest.xml`: Debug manifest overriding cleartext traffic.
+- `android/app/src/debug/res/xml/network_security_config.xml`: Debug network security config allowing cleartext traffic for local development.
+- `android/app/src/main/res/values/colors.xml`: Theme colors, severity indicators, status badges, and offline colors.
+- `android/app/src/main/res/values/strings.xml`: Application UI strings and batch labels.
+- `android/app/src/main/res/values/themes.xml`: Material 3 theme configuration.
+- `android/app/src/main/res/drawable/*`: Vector icons (`ic_sentinel_logo`, `ic_dropdown_arrow`, navigation icons).
+- `android/app/src/main/res/menu/bottom_nav_menu.xml`: Bottom navigation bar menu items.
+- `android/app/src/main/res/navigation/nav_graph.xml`: AndroidX navigation graph connecting 5 primary tabs and detail screens.
+- `android/app/src/main/res/layout/activity_main.xml`: Main layout with toolbar, clickable project selector (`layout_project_selector`), online/offline chip, offline banner, and bottom navigation.
+- `android/app/src/main/res/layout/fragment_overview.xml`: Dashboard layout with metrics cards and pull-to-refresh.
+- `android/app/src/main/res/layout/fragment_incident_list.xml`: Incident list with horizontal filter chips and RecyclerView.
+- `android/app/src/main/res/layout/item_incident.xml`: Incident card with severity pill and status badge.
+- `android/app/src/main/res/layout/fragment_incident_detail.xml`: Incident detail with lifecycle actions, RCA, evidence, and read-only remediation.
+- `android/app/src/main/res/layout/item_evidence.xml`: Telemetry evidence log row.
+- `android/app/src/main/res/layout/item_proposed_change.xml`: Read-only proposed code change row.
+- `android/app/src/main/res/layout/fragment_connector_list.xml`: Connector monitoring list layout.
+- `android/app/src/main/res/layout/item_connector.xml`: Connector item card with operational/target status and Test button.
+- `android/app/src/main/res/layout/fragment_notification_feed.xml`: Notification feed layout with batch unread header and filter chips.
+- `android/app/src/main/res/layout/item_notification.xml`: Notification item with channel badge, delivery status, and Mark Read/Retry actions.
+- `android/app/src/main/res/layout/fragment_settings.xml`: Settings layout for backend URL configuration, live test, and polling intervals.
+- `android/app/src/main/java/com/sentinelops/mobile/SentinelOpsApplication.java`: Application entry point initializing ServiceLocator.
+- `android/app/src/main/java/com/sentinelops/mobile/di/ServiceLocator.java`: Dependency container with lifecycle-aware foreground poller.
+- `android/app/src/main/java/com/sentinelops/mobile/data/local/AppPreferences.java`: SharedPreferences wrapper for URL, active project, and polling preferences.
+- `android/app/src/main/java/com/sentinelops/mobile/data/remote/model/*`: Pure Java DTOs (`HealthResponseDTO`, `ProjectDTO`, `IncidentDTO`, `IncidentStatusUpdateRequestDTO`, `EvidenceDTO`, `EvidenceReferenceDTO`, `RootCauseAnalysisDTO`, `RuntimeAnalysisDTO`, `CodeAnalysisDTO`, `InvestigationResponseDTO`, `ProposedChangeDTO`, `RemediationProposalResponseDTO`, `ConnectorConfigDTO`, `ConnectorHealthDTO`, `ConnectorResponseDTO`, `ConnectorTestResultDTO`, `NotificationResponseDTO`, `MarkAllReadResponseDTO`).
+- `android/app/src/main/java/com/sentinelops/mobile/data/remote/SentinelOpsApi.java`: Retrofit HTTP interface with verified endpoints.
+- `android/app/src/main/java/com/sentinelops/mobile/data/remote/ApiClientFactory.java`: OkHttp and Retrofit builder with dynamic URL support.
+- `android/app/src/main/java/com/sentinelops/mobile/data/repository/*`: Repository classes (`BackendHealthRepository`, `ProjectRepository`, `IncidentRepository`, `ConnectorRepository`, `NotificationRepository`).
+- `android/app/src/main/java/com/sentinelops/mobile/ui/common/*`: UI helper classes (`Resource`, `StatusBadgeHelper`, `DateFormatHelper` with quoted UTC pattern).
+- `android/app/src/main/java/com/sentinelops/mobile/ui/main/*`: `MainActivity` and `MainViewModel` with dynamic single-choice project selector dialog and auto-selection.
+- `android/app/src/main/java/com/sentinelops/mobile/ui/overview/*`: `OverviewFragment` and `OverviewViewModel` with sequence guards.
+- `android/app/src/main/java/com/sentinelops/mobile/ui/incidents/*`: `IncidentListFragment`, `IncidentDetailFragment`, `IncidentViewModel` with sequence guards, and adapters (`IncidentAdapter`, `EvidenceAdapter`, `ProposedChangeAdapter`).
+- `android/app/src/main/java/com/sentinelops/mobile/ui/connectors/*`: `ConnectorListFragment`, `ConnectorViewModel` with sequence guards, and `ConnectorAdapter`.
+- `android/app/src/main/java/com/sentinelops/mobile/ui/notifications/*`: `NotificationFeedFragment`, `NotificationViewModel` with sequence guards, and `NotificationAdapter`.
+- `android/app/src/main/java/com/sentinelops/mobile/ui/settings/*`: `SettingsFragment` and `SettingsViewModel`.
+- `android/app/src/test/java/com/sentinelops/mobile/*`: JVM unit test suite (`DTOJsonSerializationTest`, `BackendHealthSemanticsTest`, `IncidentLifecyclePresentationTest`, `NotificationBatchCountTest`, `ProjectSelectionStateTest`).
+- `android/app/src/androidTest/java/com/sentinelops/mobile/ui/*`: Android instrumentation test suite (`BottomNavigationSmokeTest`, `IncidentLifecycleButtonTest`, `OfflineBannerSmokeTest`, `RapidNavigationTest`, `ProjectSelectorUiTest`).
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 17 documentation.
+
+### Verification
+- **Project Selector Defect Fix & Concurrency Hardening**:
+  - Replaced non-touchable toolbar Spinner with `layout_project_selector` (`TextView` + dropdown vector) triggering `MaterialAlertDialogBuilder` single-choice dialog.
+  - Automated selection of first available project from `GET /projects` if no project was previously saved or if the saved project is no longer registered.
+  - Persists active project selection to `AppPreferences` and updates top toolbar label dynamically.
+  - Added request sequence numbers (`requestSequence`) and `currentRequestedProjectId` checks in `OverviewViewModel`, `IncidentViewModel`, `ConnectorViewModel`, and `NotificationViewModel` to drop stale in-flight responses across project switches.
+  - Fixed `DateFormatHelper` pattern syntax (`yyyy-MM-dd HH:mm 'UTC'`), preventing `IllegalArgumentException` on Android 13 ART runtime.
+- **BottomNavigation Mutually Navigable Top-Level Destinations Fix**:
+  - Replaced `NavigationUI.setupWithNavController`'s start-destination popping assumption with explicit top-level destination router and `OnDestinationChangedListener` in `MainActivity`.
+  - When returning to Overview from any primary destination (`nav_incidents`, `nav_connectors`, `nav_notifications`, `nav_settings`) or child screens (`incident_detail`), invokes `popBackStack(R.id.nav_overview, false)` with single-top fallback, instantly returning to Overview without creating duplicate back-stack entries.
+  - Configured matching top-level `NavOptions` (`launchSingleTop = true`, `restoreState = true`, `popUpTo(nav_overview, false, true)`) for Overview summary cards (`cardIncidents`, `cardConnectors`, `cardNotifications`), ensuring 100% consistent state whether navigating via cards or bottom navigation.
+  - Wired `setOnItemReselectedListener` as a safe no-op, preventing duplicate fragments and navigation crashes on repeated active-tab taps.
+- **Android Compilation**: Executed `.\gradlew.bat assembleDebug` — all tasks executed successfully, generating debug APK with 0 errors.
+- **Android JVM Unit Tests**: Executed `.\gradlew.bat testDebugUnitTest` — 25 unit tests passed across DTO serialization, health semantics, incident lifecycle presentation, notification batch tracking, and project selection state/concurrency.
+- **Android Connected Instrumentation Tests**: Executed `.\gradlew.bat connectedDebugAndroidTest` on physical device `408a525f` (V2040 - Android 13) — all 9 instrumentation tests passed (100% pass rate) across `BottomNavigationSmokeTest` (5/5: Overview return from all 4 tabs, sequential multi-tab traversal, repeated navigation, Overview card shortcuts, tab reselection), `IncidentLifecycleButtonTest`, `OfflineBannerSmokeTest`, `RapidNavigationTest`, and `ProjectSelectorUiTest`.
+- **Backend Python Regression Suite**: Executed `python -m pytest -v` — all 379 tests passed in 47.95s with 100% pass rate (zero backend code changes, zero regressions, zero warnings).
+- **Codebase Integrity**: Executed `git diff --check` with 0 whitespace or formatting issues.
 
 ### User Approval
 Approved

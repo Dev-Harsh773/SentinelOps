@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/nav_overview">
+
+    <fragment
+        android:id="@+id/nav_overview"
+        android:name="com.sentinelops.mobile.ui.overview.OverviewFragment"
+        android:label="@string/nav_overview"
+        tools:layout="@layout/fragment_overview" />
+
+    <fragment
+        android:id="@+id/nav_incidents"
+        android:name="com.sentinelops.mobile.ui.incidents.IncidentListFragment"
+        android:label="@string/nav_incidents"
+        tools:layout="@layout/fragment_incident_list">
+        <action
+            android:id="@+id/action_incidents_to_detail"
+            app:destination="@id/incident_detail" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/incident_detail"
+        android:name="com.sentinelops.mobile.ui.incidents.IncidentDetailFragment"
+        android:label="@string/incident_details_title"
+        tools:layout="@layout/fragment_incident_detail">
+        <argument
+            android:name="incident_id"
+            app:argType="string" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/nav_connectors"
+        android:name="com.sentinelops.mobile.ui.connectors.ConnectorListFragment"
+        android:label="@string/nav_connectors"
+        tools:layout="@layout/fragment_connector_list" />
+
+    <fragment
+        android:id="@+id/nav_notifications"
+        android:name="com.sentinelops.mobile.ui.notifications.NotificationFeedFragment"
+        android:label="@string/nav_notifications"
+        tools:layout="@layout/fragment_notification_feed" />
+
+    <fragment
+        android:id="@+id/nav_settings"
+        android:name="com.sentinelops.mobile.ui.settings.SettingsFragment"
+        android:label="@string/nav_settings"
+        tools:layout="@layout/fragment_settings" />
+
+</navigation>

@@ -54,4 +54,11 @@ runtime/*.db
 runtime/*.db-wal
 runtime/*.db-shm
 
-
+# Android build and local files
+.gradle/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab

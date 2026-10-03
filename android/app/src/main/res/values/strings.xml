@@ -1,0 +1,57 @@
+<resources>
+    <string name="app_name">SentinelOps</string>
+    <string name="nav_overview">Overview</string>
+    <string name="nav_incidents">Incidents</string>
+    <string name="nav_connectors">Connectors</string>
+    <string name="nav_notifications">Notifications</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Operational Status -->
+    <string name="status_online">ONLINE</string>
+    <string name="status_offline">OFFLINE</string>
+    <string name="offline_warning">Backend offline — actions disabled</string>
+
+    <!-- Project Selector -->
+    <string name="projects_title">Select Project</string>
+    <string name="select_project_hint">Select Project</string>
+    <string name="no_projects_registered">No projects registered.</string>
+    <string name="loading_projects">Loading projects...</string>
+
+    <!-- Overview -->
+    <string name="overview_project_header">Active Project</string>
+    <string name="overview_open_incidents">Active Incidents</string>
+    <string name="overview_connectors_health">Connectors Health</string>
+    <string name="overview_notifications_unread">Unread in loaded batch</string>
+    <string name="overview_last_indexed">Last Indexed: %1$s</string>
+    <string name="overview_not_indexed">Not indexed</string>
+
+    <!-- Incidents -->
+    <string name="incident_action_investigate">Investigate</string>
+    <string name="incident_action_resolve">Resolve</string>
+    <string name="incident_action_close">Close</string>
+    <string name="incident_details_title">Incident Detail</string>
+    <string name="incident_section_investigation">Investigation &amp; RCA</string>
+    <string name="incident_section_evidence">Runtime Evidence</string>
+    <string name="incident_section_remediation">Remediation Proposal (Read-Only)</string>
+    <string name="incident_confidence_format">Confidence: %1$d%%</string>
+
+    <!-- Connectors -->
+    <string name="connector_action_test">Test</string>
+    <string name="connector_testing">Testing...</string>
+    <string name="connector_operational">Operational: %1$s</string>
+    <string name="connector_target">Target: %1$s</string>
+
+    <!-- Notifications -->
+    <string name="notification_mark_all_read">Mark All Read</string>
+    <string name="notification_mark_read">Mark Read</string>
+    <string name="notification_retry">Retry</string>
+    <string name="notification_batch_unread_label">Unread in loaded batch: %1$d</string>
+
+    <!-- Settings -->
+    <string name="settings_backend_url">Backend URL</string>
+    <string name="settings_test_connection">Test Connection</string>
+    <string name="settings_polling_interval">Foreground Polling Interval</string>
+    <string name="settings_polling_30s">30 Seconds</string>
+    <string name="settings_polling_60s">60 Seconds</string>
+    <string name="settings_polling_manual">Manual Only</string>
+</resources>
