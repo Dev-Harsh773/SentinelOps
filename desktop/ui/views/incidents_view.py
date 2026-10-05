@@ -1,12 +1,23 @@
 """Incidents list, filtering, and deep-investigation detail drawer view."""
 
 from typing import List, Optional
+try:
+    from PyQt6.sip import isdeleted
+except (ImportError, ModuleNotFoundError):
+    try:
+        import sip
+        isdeleted = sip.isdeleted
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        def isdeleted(obj: object) -> bool:
+            return False
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -28,6 +39,7 @@ from desktop.api.models import (
     RemediationBranchDTO,
     RemediationDTO,
     RemediationReviewDTO,
+    SafeActionDTO,
 )
 from desktop.state.app_state import AppState
 from desktop.state.signals import app_signals
@@ -48,6 +60,9 @@ class IncidentsView(QWidget):
         self._selected_incident: Optional[IncidentDTO] = None
         self._loading_incident_id: Optional[str] = None
         self._transitioning_incident_ids: set[str] = set()
+        self._actions_in_flight: set[str] = set()
+        self._is_refreshing: bool = False
+        self._refresh_generation: int = 0
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 16, 20, 16)
@@ -105,6 +120,7 @@ class IncidentsView(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self._on_row_selected)
+        self.table.cellClicked.connect(self._on_cell_clicked)
         self.splitter.addWidget(self.table)
 
         # Right: Detail Drawer
@@ -120,10 +136,17 @@ class IncidentsView(QWidget):
         app_signals.active_project_changed.connect(self._on_project_changed)
 
     def _on_project_changed(self, project_id: str) -> None:
-        """Reset selection and in-flight fetch tracking on project change."""
-        self._selected_incident = None
-        self._loading_incident_id = None
-        self._set_detail_enabled(False)
+        """Reset selection, invalidate in-flight refreshes, and scope table to new project."""
+        self._refresh_generation += 1
+        self._is_refreshing = False
+        self._actions_in_flight.clear()
+        self._clear_incident_detail()
+        if project_id and project_id in self.state.cached_incidents:
+            cached_list, _ = self.state.cached_incidents[project_id]
+            self._all_incidents = [i for i in cached_list if i.project_id == project_id]
+        else:
+            self._all_incidents = []
+        self._apply_filters()
 
     def _create_detail_panel(self) -> QWidget:
         panel = QFrame(self)
@@ -188,9 +211,63 @@ class IncidentsView(QWidget):
         self.remediation_text.setReadOnly(True)
         self.tabs.addTab(self.remediation_text, "Remediation")
 
+        # Tab 5: Safe Actions
+        self.actions_scroll = QScrollArea(self.tabs)
+        self.actions_scroll.setWidgetResizable(True)
+        self.actions_widget = QWidget()
+        self.actions_layout = QVBoxLayout(self.actions_widget)
+        self.actions_layout.setContentsMargins(10, 10, 10, 10)
+        self.actions_layout.setSpacing(10)
+        self.actions_scroll.setWidget(self.actions_widget)
+        self.tabs.addTab(self.actions_scroll, "Safe Actions")
+
         p_layout.addWidget(self.tabs)
-        self._set_detail_enabled(False)
+        self._clear_incident_detail()
         return panel
+
+    def _render_neutral_empty_safe_actions(self, message: str = "No incident selected.") -> None:
+        """Render a clean, neutral empty-state message in the Safe Actions tab."""
+        if not self._is_safe_to_update_ui():
+            return
+        try:
+            while self.actions_layout.count():
+                item = self.actions_layout.takeAt(0)
+                if item and item.widget():
+                    item.widget().deleteLater()
+            lbl = QLabel(message, self.actions_widget)
+            lbl.setStyleSheet("color: #94A3B8; font-style: italic;")
+            self.actions_layout.addWidget(lbl)
+            self.actions_layout.addStretch()
+        except (RuntimeError, ReferenceError):
+            pass
+
+    def _clear_incident_detail(self) -> None:
+        """Clear stale detail pane and restore neutral empty state across all tabs."""
+        self._selected_incident = None
+        self._loading_incident_id = None
+        self._set_detail_enabled(False)
+
+        # Clear table selection
+        self.table.blockSignals(True)
+        try:
+            self.table.clearSelection()
+        finally:
+            self.table.blockSignals(False)
+
+        # Reset header and metadata
+        self.d_title.setText("Select an incident to view details")
+        self.d_sev_badge.hide()
+        self.d_status_badge.hide()
+        self.d_meta_lbl.setText("No incident selected")
+
+        # Neutral empty text on inspection tabs
+        self.summary_text.setHtml("<p style='color: #94A3B8; font-style: italic;'>No incident selected.</p>")
+        self.evidence_text.setPlainText("No incident selected.")
+        self.investigation_text.setPlainText("No incident selected.")
+        self.remediation_text.setPlainText("No incident selected.")
+
+        # Safe Actions empty state
+        self._render_neutral_empty_safe_actions("No incident selected.")
 
     def _set_detail_enabled(self, enabled: bool) -> None:
         self.tabs.setEnabled(enabled)
@@ -247,16 +324,55 @@ class IncidentsView(QWidget):
             self._update_action_buttons()
 
     def _on_incidents_updated(self, incidents: List[IncidentDTO], ts) -> None:
-        self._all_incidents = incidents
+        if not self._is_safe_to_update_ui():
+            return
+
+        active_project = self.state.active_project_id
+        if active_project:
+            # Canonical project-scoping invariant: strictly drop any cross-project incidents
+            scoped_incidents = [i for i in incidents if i.project_id == active_project]
+        else:
+            scoped_incidents = list(incidents)
+
+        prev_selected_id = self._selected_incident.id if self._selected_incident else None
+        self._all_incidents = scoped_incidents
         self._apply_filters()
 
+        if prev_selected_id:
+            match = next((i for i in self._all_incidents if i.id == prev_selected_id), None)
+            if match:
+                self._selected_incident = match
+                self._restore_table_selection(prev_selected_id)
+                self._render_incident_detail(match)
+            else:
+                self._clear_incident_detail()
+        else:
+            if not self._all_incidents:
+                self._clear_incident_detail()
+
+    def _restore_table_selection(self, incident_id: str) -> None:
+        """Restore row selection in table without emitting redundant selection changed signals."""
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 2)
+                if item and item.data(Qt.ItemDataRole.UserRole) == incident_id:
+                    self.table.selectRow(row)
+                    break
+        finally:
+            self.table.blockSignals(False)
+
     def _apply_filters(self) -> None:
+        active_project = self.state.active_project_id
         query = self.search_input.text().strip().lower()
         sev_choice = self.sev_filter.currentText().lower()
         status_choice = self.status_filter.currentText().lower()
 
         filtered = []
         for inc in self._all_incidents:
+            # Authoritative project guard: never allow cross-project incident into filtered list
+            if active_project and inc.project_id != active_project:
+                continue
             if sev_choice != "all severities" and inc.severity != sev_choice:
                 continue
             if status_choice != "all statuses" and inc.status != status_choice:
@@ -275,6 +391,10 @@ class IncidentsView(QWidget):
         self._populate_table(filtered)
 
     def _populate_table(self, incidents: List[IncidentDTO]) -> None:
+        active_project = self.state.active_project_id
+        if active_project:
+            # Absolute invariant: no incident outside active project is ever rendered in the table
+            incidents = [i for i in incidents if i.project_id == active_project]
         self.table.setRowCount(len(incidents))
         for row, inc in enumerate(incidents):
             # Severity
@@ -300,10 +420,20 @@ class IncidentsView(QWidget):
             c_str = inc.created_at.strftime("%Y-%m-%d %H:%M") if inc.created_at else ""
             self.table.setItem(row, 5, QTableWidgetItem(c_str))
 
+    def _on_cell_clicked(self, row: int, column: int) -> None:
+        """Handle cell click to ensure re-selection fetches fresh details & safe actions even if already selected."""
+        item = self.table.item(row, 2)
+        if not item:
+            return
+        inc_id = item.data(Qt.ItemDataRole.UserRole)
+        match = next((i for i in self._all_incidents if i.id == inc_id), None)
+        if match:
+            self._selected_incident = match
+            self._render_incident_detail(match)
+
     def _on_row_selected(self) -> None:
         rows = self.table.selectionModel().selectedRows()
         if not rows:
-            self._set_detail_enabled(False)
             return
 
         row = rows[0].row()
@@ -318,9 +448,75 @@ class IncidentsView(QWidget):
         self._selected_incident = match
         self._render_incident_detail(match)
 
+    def on_view_activated(self) -> None:
+        """Invoked when user navigates to the Incidents tab."""
+        if not self._is_safe_to_update_ui():
+            return
+        if self._selected_incident:
+            self._render_incident_detail(self._selected_incident)
+
+    def refresh(self) -> None:
+        """Asynchronously refresh the incident list and active incident's safe actions."""
+        if not self._is_safe_to_update_ui():
+            return
+        if self._is_refreshing:
+            return
+        self._is_refreshing = True
+        self._refresh_generation += 1
+        current_gen = self._refresh_generation
+        target_project_id = self.state.active_project_id
+
+        def worker():
+            return self.client.list_incidents()
+
+        def on_success(incidents: List[IncidentDTO]):
+            self._is_refreshing = False
+            if not self._is_safe_to_update_ui():
+                return
+            # Stale request protection: discard if project changed or newer refresh started
+            if current_gen != self._refresh_generation or (target_project_id and self.state.active_project_id != target_project_id):
+                return
+
+            # Canonical pipeline: set_incidents_from_all partitions by project and emits incidents_updated
+            self.state.set_incidents_from_all(incidents)
+
+            # If an incident is selected and belongs to target project, authoritatively refresh safe actions
+            if self._selected_incident and (not target_project_id or self._selected_incident.project_id == target_project_id):
+                self._refresh_safe_actions(self._selected_incident.id)
+
+        def on_error(exc: Exception):
+            self._is_refreshing = False
+            if (
+                self._is_safe_to_update_ui()
+                and current_gen == self._refresh_generation
+                and (not target_project_id or self.state.active_project_id == target_project_id)
+                and self._selected_incident
+            ):
+                self._refresh_safe_actions(self._selected_incident.id)
+
+        self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+
+    def _render_safe_actions_loading(self) -> None:
+        """Display loading placeholder in Safe Actions tab while server query is in flight."""
+        if not self._is_safe_to_update_ui():
+            return
+        try:
+            while self.actions_layout.count():
+                item = self.actions_layout.takeAt(0)
+                if item and item.widget():
+                    item.widget().deleteLater()
+            lbl = QLabel("Loading safe actions...", self.actions_widget)
+            lbl.setStyleSheet("color: #94A3B8; font-style: italic;")
+            self.actions_layout.addWidget(lbl)
+            self.actions_layout.addStretch()
+        except (RuntimeError, ReferenceError):
+            pass
+
     def _render_incident_detail(self, inc: IncidentDTO) -> None:
         self._set_detail_enabled(True)
         self.d_title.setText(inc.title)
+        self.d_sev_badge.show()
+        self.d_status_badge.show()
         self.d_sev_badge.set_value(inc.severity, inc.severity)
         self.d_status_badge.set_value(inc.status, inc.status)
         self.d_meta_lbl.setText(f"{inc.service} | {inc.environment} | ID: {inc.id[:8]}")
@@ -334,11 +530,12 @@ class IncidentsView(QWidget):
             f"<b>Updated:</b> {inc.updated_at}</p>"
         )
 
-        # Asynchronously fetch evidence, investigation, remediation
+        # Asynchronously fetch evidence, investigation, remediation, actions
         self._loading_incident_id = inc.id
         self.evidence_text.setPlainText("Loading evidence...")
         self.investigation_text.setPlainText("Loading investigation...")
         self.remediation_text.setPlainText("Loading remediation...")
+        self._render_safe_actions_loading()
 
         def fetch_artifacts():
             ev = self.client.list_incident_evidence(inc.id)
@@ -346,30 +543,37 @@ class IncidentsView(QWidget):
             rem = self.client.get_incident_remediation(inc.id)
             rev = self.client.list_remediation_reviews(inc.id) if rem else []
             branch = self.client.get_remediation_branch(inc.id) if rem else None
-            return ev, inv, rem, rev, branch
+            actions = self.client.list_actions(incident_id=inc.id)
+            return ev, inv, rem, rev, branch, actions
 
         def on_success(artifacts):
             if (
-                self._loading_incident_id != inc.id
+                not self._is_safe_to_update_ui()
+                or self._loading_incident_id != inc.id
                 or not self._selected_incident
                 or self._selected_incident.id != inc.id
+                or (self.state.active_project_id and self._selected_incident.project_id != self.state.active_project_id)
             ):
                 return  # Stale response discarded
-            ev, inv, rem, rev, branch = artifacts
+            ev, inv, rem, rev, branch, actions = artifacts
             self._render_evidence(ev)
             self._render_investigation(inv)
             self._render_remediation(rem, rev, branch)
+            self._render_safe_actions(actions)
 
         def on_error(exc):
             if (
-                self._loading_incident_id != inc.id
+                not self._is_safe_to_update_ui()
+                or self._loading_incident_id != inc.id
                 or not self._selected_incident
                 or self._selected_incident.id != inc.id
+                or (self.state.active_project_id and self._selected_incident.project_id != self.state.active_project_id)
             ):
                 return  # Stale response discarded
             self.evidence_text.setPlainText(f"Failed to load evidence: {exc}")
             self.investigation_text.setPlainText(f"Failed to load investigation: {exc}")
             self.remediation_text.setPlainText(f"Failed to load remediation: {exc}")
+            self._render_safe_actions([])
 
         self.task_runner.run(fetch_artifacts, on_success=on_success, on_error=on_error)
 
@@ -473,5 +677,255 @@ class IncidentsView(QWidget):
             if self._selected_incident and self._selected_incident.id == inc_id:
                 self._update_action_buttons(self._selected_incident.status)
             app_signals.action_failed.emit("Transition Rejected", str(exc))
+
+        self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+
+    def _is_safe_to_update_ui(self) -> bool:
+        """Verify that this view and its child widgets are still alive."""
+        try:
+            if isdeleted(self):
+                return False
+            if hasattr(self, "actions_widget") and isdeleted(self.actions_widget):
+                return False
+            if hasattr(self, "actions_layout") and isdeleted(self.actions_layout):
+                return False
+            return True
+        except (RuntimeError, ReferenceError):
+            return False
+
+    def _refresh_safe_actions(self, incident_id: str) -> None:
+        """Fetch and update safe actions for the incident without reloading entire drawer."""
+        if not self._is_safe_to_update_ui():
+            return
+
+        def fetch():
+            return self.client.list_actions(incident_id=incident_id)
+
+        def on_success(actions):
+            if (
+                not self._is_safe_to_update_ui()
+                or not self._selected_incident
+                or self._selected_incident.id != incident_id
+                or (self.state.active_project_id and self._selected_incident.project_id != self.state.active_project_id)
+            ):
+                return
+            self._render_safe_actions(actions)
+
+        def on_error(exc):
+            pass
+
+        self.task_runner.run(fetch, on_success=on_success, on_error=on_error)
+
+    def _render_safe_actions(self, actions: List[SafeActionDTO]) -> None:
+        if not self._is_safe_to_update_ui():
+            return
+
+        try:
+            # Clear previous cards
+            while self.actions_layout.count():
+                item = self.actions_layout.takeAt(0)
+                if item and item.widget():
+                    item.widget().deleteLater()
+
+            if not actions:
+                lbl = QLabel("No safe actions proposed for this incident.", self.actions_widget)
+                lbl.setStyleSheet("color: #94A3B8; font-style: italic;")
+                self.actions_layout.addWidget(lbl)
+                self.actions_layout.addStretch()
+                return
+
+            for action in actions:
+                card = QFrame(self.actions_widget)
+                card.setProperty("class", "Card")
+                card.setStyleSheet("background: #1E293B; border-radius: 6px; padding: 10px; margin-bottom: 6px;")
+                c_layout = QVBoxLayout(card)
+                c_layout.setSpacing(6)
+
+                top_row = QHBoxLayout()
+                type_lbl = QLabel(f"<b>{action.action_type.upper()}</b> on {action.target_type}:{action.target_id[:8]}", card)
+                type_lbl.setStyleSheet("color: #F8FAFC; font-size: 13px;")
+                top_row.addWidget(type_lbl)
+                top_row.addStretch()
+
+                policy_badge = StatusBadge(action.policy_status, action.policy_status, card)
+                approval_badge = StatusBadge(action.approval_status, action.approval_status, card)
+                exec_badge = StatusBadge(action.execution_status, action.execution_status, card)
+
+                top_row.addWidget(policy_badge)
+                top_row.addWidget(approval_badge)
+                top_row.addWidget(exec_badge)
+                c_layout.addLayout(top_row)
+
+                # Fingerprint and actor info
+                info_lbl = QLabel(
+                    f"<span style='color:#94A3B8;'>Fingerprint:</span> {action.fingerprint[:12]}... | "
+                    f"<span style='color:#94A3B8;'>Requested by:</span> {action.requested_by_claim}",
+                    card,
+                )
+                info_lbl.setStyleSheet("font-size: 11px;")
+                c_layout.addWidget(info_lbl)
+
+                if action.failure_reason:
+                    err_lbl = QLabel(f"<span style='color:#EF4444;'>Reason/Error:</span> {action.failure_reason}", card)
+                    err_lbl.setWordWrap(True)
+                    c_layout.addWidget(err_lbl)
+
+                if action.execution_result:
+                    res_lbl = QLabel(f"<span style='color:#10B981;'>Result:</span> {action.execution_result}", card)
+                    res_lbl.setWordWrap(True)
+                    c_layout.addWidget(res_lbl)
+
+                # Controls
+                btn_row = QHBoxLayout()
+                is_online = self.state.is_online()
+                is_in_flight = action.action_id in self._actions_in_flight
+
+                if action.approval_status == "pending" and action.policy_status == "allowed":
+                    approve_btn = QPushButton("Approve", card)
+                    approve_btn.setEnabled(is_online and not is_in_flight)
+                    approve_btn.clicked.connect(lambda _, a=action: self._approve_action(a.action_id))
+                    reject_btn = QPushButton("Reject", card)
+                    reject_btn.setEnabled(is_online and not is_in_flight)
+                    reject_btn.clicked.connect(lambda _, a=action: self._reject_action(a.action_id))
+                    btn_row.addWidget(approve_btn)
+                    btn_row.addWidget(reject_btn)
+
+                elif action.approval_status == "approved" and action.execution_status == "not_started":
+                    exec_btn = QPushButton("Execute Action", card)
+                    exec_btn.setStyleSheet("background: #0284C7; color: white; font-weight: bold;")
+                    if is_in_flight:
+                        exec_btn.setText("Executing...")
+                        exec_btn.setEnabled(False)
+                    else:
+                        exec_btn.setText("Execute Action")
+                        exec_btn.setEnabled(is_online)
+                    exec_btn.clicked.connect(lambda _, a=action: self._execute_action(a.action_id))
+                    btn_row.addWidget(exec_btn)
+
+                elif action.execution_status == "executing" or is_in_flight:
+                    exec_lbl = QLabel("<span style='color:#38BDF8;'><b>Executing...</b></span>", card)
+                    btn_row.addWidget(exec_lbl)
+
+                btn_row.addStretch()
+                if btn_row.count() > 1:
+                    c_layout.addLayout(btn_row)
+
+                self.actions_layout.addWidget(card)
+
+            self.actions_layout.addStretch()
+        except (RuntimeError, ReferenceError):
+            pass
+
+    def _approve_action(self, action_id: str) -> None:
+        if not self.state.is_online():
+            app_signals.action_failed.emit("Action Blocked", "Cannot approve safe action while offline.")
+            return
+
+        if action_id in self._actions_in_flight:
+            return
+
+        if not self._selected_incident:
+            return
+
+        inc_id = self._selected_incident.id
+
+        operator, ok = QInputDialog.getText(self, "Approve Safe Action", "Enter operator attribution claim (e.g. operator:admin):")
+        if not ok or not operator.strip():
+            return
+        comment, _ = QInputDialog.getText(self, "Approval Comment", "Enter optional comment:")
+
+        self._actions_in_flight.add(action_id)
+        self._refresh_safe_actions(inc_id)
+
+        def worker():
+            return self.client.approve_action(action_id, operator.strip(), comment.strip() if comment else None)
+
+        def on_success(updated):
+            self._actions_in_flight.discard(action_id)
+            app_signals.action_succeeded.emit("Action Approved", f"Safe action {action_id[:8]} approved.")
+            if self._is_safe_to_update_ui() and self._selected_incident and self._selected_incident.id == inc_id:
+                self._refresh_safe_actions(inc_id)
+
+        def on_error(exc):
+            self._actions_in_flight.discard(action_id)
+            app_signals.action_failed.emit("Approval Failed", str(exc))
+            if self._is_safe_to_update_ui() and self._selected_incident and self._selected_incident.id == inc_id:
+                self._refresh_safe_actions(inc_id)
+
+        self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+
+    def _reject_action(self, action_id: str) -> None:
+        if not self.state.is_online():
+            app_signals.action_failed.emit("Action Blocked", "Cannot reject safe action while offline.")
+            return
+
+        if action_id in self._actions_in_flight:
+            return
+
+        if not self._selected_incident:
+            return
+
+        inc_id = self._selected_incident.id
+
+        operator, ok = QInputDialog.getText(self, "Reject Safe Action", "Enter operator attribution claim (e.g. operator:admin):")
+        if not ok or not operator.strip():
+            return
+        reason, ok2 = QInputDialog.getText(self, "Rejection Reason", "Enter rejection reason:")
+        if not ok2 or not reason.strip():
+            return
+
+        self._actions_in_flight.add(action_id)
+        self._refresh_safe_actions(inc_id)
+
+        def worker():
+            return self.client.reject_action(action_id, operator.strip(), reason.strip())
+
+        def on_success(updated):
+            self._actions_in_flight.discard(action_id)
+            app_signals.action_succeeded.emit("Action Rejected", f"Safe action {action_id[:8]} rejected.")
+            if self._is_safe_to_update_ui() and self._selected_incident and self._selected_incident.id == inc_id:
+                self._refresh_safe_actions(inc_id)
+
+        def on_error(exc):
+            self._actions_in_flight.discard(action_id)
+            app_signals.action_failed.emit("Rejection Failed", str(exc))
+            if self._is_safe_to_update_ui() and self._selected_incident and self._selected_incident.id == inc_id:
+                self._refresh_safe_actions(inc_id)
+
+        self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+
+    def _execute_action(self, action_id: str) -> None:
+        if not self.state.is_online():
+            app_signals.action_failed.emit("Action Blocked", "Cannot execute safe action while offline.")
+            return
+
+        if action_id in self._actions_in_flight:
+            return
+
+        if not self._selected_incident:
+            return
+
+        inc_id = self._selected_incident.id
+
+        self._actions_in_flight.add(action_id)
+        self._refresh_safe_actions(inc_id)
+
+        def worker():
+            return self.client.execute_action(action_id)
+
+        def on_success(updated):
+            self._actions_in_flight.discard(action_id)
+            app_signals.action_succeeded.emit(
+                "Execution Completed",
+                f"Action {action_id[:8]} status: {updated.execution_status.upper()}",
+            )
+            if self._is_safe_to_update_ui() and self._selected_incident and self._selected_incident.id == inc_id:
+                self._refresh_safe_actions(inc_id)
+
+        def on_error(exc):
+            self._actions_in_flight.discard(action_id)
+            app_signals.action_failed.emit("Execution Error", str(exc))
+            if self._is_safe_to_update_ui() and self._selected_incident and self._selected_incident.id == inc_id:
+                self._refresh_safe_actions(inc_id)
 
         self.task_runner.run(worker, on_success=on_success, on_error=on_error)

@@ -31,6 +31,7 @@ from desktop.ui.views.knowledge_view import KnowledgeView
 from desktop.ui.views.notifications_view import NotificationsView
 from desktop.ui.views.overview_view import OverviewView
 from desktop.ui.views.settings_view import SettingsView
+from unittest.mock import MagicMock
 from desktop.workers.task_runner import TaskRunner
 
 
@@ -42,6 +43,34 @@ def qapp():
     if app is None:
         app = QApplication(sys.argv)
     return app
+
+
+@pytest.fixture(autouse=True)
+def reset_desktop_views_state():
+    """Ensure AppState singleton is reset for isolation across tests."""
+    state = AppState()
+    state._init_state()
+    yield
+    state._init_state()
+    for attr in [
+        "connection_changed",
+        "active_project_changed",
+        "projects_updated",
+        "incidents_updated",
+        "notifications_updated",
+        "connectors_updated",
+        "knowledge_updated",
+        "watcher_status_updated",
+        "batch_unread_count_updated",
+        "action_succeeded",
+        "action_failed",
+    ]:
+        sig = getattr(app_signals, attr, None)
+        if sig:
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass
 
 
 def test_status_badge(qapp):
@@ -179,7 +208,10 @@ def test_settings_view_rendering(qapp, tmp_path):
 
 def test_main_window_assembly(qapp):
     cfg = DesktopConfig()
-    client = SentinelOpsClient()
+    client = MagicMock(spec=SentinelOpsClient)
+    client.list_projects.return_value = []
+    client.get_health.return_value = {"status": "ok"}
+    client.get_watcher_status.return_value = {"status": "running"}
     win = MainWindow(config=cfg, client=client)
     assert win.windowTitle() == "SentinelOps Control Center"
     assert win.stack.count() == 6
@@ -191,7 +223,7 @@ def test_main_window_assembly(qapp):
     # Clean shutdown
     win.poller.stop()
     win.poller.wait(1000)
-    client.close()
+    win.close()
 
 
 def test_incidents_view_lifecycle_buttons_state_awareness(qapp):

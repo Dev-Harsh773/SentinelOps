@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.incidents.models import Severity
 from app.notifications.models import (
@@ -54,7 +54,7 @@ class SqliteNotificationStore:
         if self._db_path != ":memory:":
             os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=30.0)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 
@@ -399,21 +399,26 @@ class SqliteNotificationStore:
     def mark_notification_read(self, notification_id: str, now: datetime) -> Notification:
         """Mark single notification as read."""
         with self._lock:
-            cursor = self._conn.cursor()
-            cursor.execute(
-                """
-                UPDATE notifications SET
-                    read_status = 'read',
-                    read_at = ?,
-                    updated_at = ?
-                WHERE notification_id = ?;
-                """,
-                (now.isoformat(), now.isoformat(), notification_id),
-            )
-            if cursor.rowcount == 0:
-                raise NotificationNotFoundError(notification_id)
-            self._conn.commit()
-            return self.get_notification(notification_id)
+            try:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE notifications SET
+                        read_status = 'read',
+                        read_at = ?,
+                        updated_at = ?
+                    WHERE notification_id = ?;
+                    """,
+                    (now.isoformat(), now.isoformat(), notification_id),
+                )
+                if cursor.rowcount == 0:
+                    self._conn.rollback()
+                    raise NotificationNotFoundError(notification_id)
+                self._conn.commit()
+                return self.get_notification(notification_id)
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def mark_all_read(self, project_id: str, now: datetime) -> int:
         """Mark all unread notifications for a project as read."""
@@ -516,23 +521,71 @@ class SqliteNotificationStore:
         """Reset a failed notification to pending for manual retry."""
         now_str = now.isoformat()
         with self._lock:
-            cursor = self._conn.cursor()
-            cursor.execute(
-                """
-                UPDATE notifications SET
-                    delivery_status = 'pending',
-                    attempt_count = 0,
-                    next_attempt_at = ?,
-                    failure_reason = NULL,
-                    updated_at = ?
-                WHERE notification_id = ?;
-                """,
-                (now_str, now_str, notification_id),
-            )
-            if cursor.rowcount == 0:
-                raise NotificationNotFoundError(notification_id)
-            self._conn.commit()
-            return self.get_notification(notification_id)
+            try:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE notifications SET
+                        delivery_status = 'pending',
+                        attempt_count = 0,
+                        next_attempt_at = ?,
+                        failure_reason = NULL,
+                        updated_at = ?
+                    WHERE notification_id = ?;
+                    """,
+                    (now_str, now_str, notification_id),
+                )
+                if cursor.rowcount == 0:
+                    self._conn.rollback()
+                    raise NotificationNotFoundError(notification_id)
+                self._conn.commit()
+                return self.get_notification(notification_id)
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def atomic_reset_failed_for_retry(
+        self, notification_id: str, now: datetime
+    ) -> Tuple[bool, Optional[Notification], Optional[DeliveryStatus]]:
+        """Atomically reset a notification to pending ONLY if its delivery_status == 'failed'.
+
+        Returns:
+            (True, updated_notification, None) if successfully reset.
+            (False, current_notification, current_status) if status was not 'failed'.
+            (False, None, None) if notification was not found.
+        """
+        now_str = now.isoformat()
+        with self._lock:
+            try:
+                cursor = self._conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE notifications SET
+                        delivery_status = 'pending',
+                        attempt_count = 0,
+                        next_attempt_at = ?,
+                        failure_reason = NULL,
+                        updated_at = ?
+                    WHERE notification_id = ? AND delivery_status = 'failed';
+                    """,
+                    (now_str, now_str, notification_id),
+                )
+                if cursor.rowcount > 0:
+                    self._conn.commit()
+                    return True, self.get_notification(notification_id), None
+
+                # rowcount == 0: rollback the update transaction immediately
+                # to release write locks on SQLite before reading current state
+                self._conn.rollback()
+                cursor.execute("SELECT delivery_status FROM notifications WHERE notification_id = ?;", (notification_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return False, None, None
+                current_status = DeliveryStatus(row["delivery_status"])
+                return False, self.get_notification(notification_id), current_status
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def recover_in_flight_on_startup(self, now: datetime) -> int:
         """Reset interrupted 'delivering' notifications to 'pending' on application startup.

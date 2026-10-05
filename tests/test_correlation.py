@@ -11,7 +11,12 @@ from app.correlation.engine import CorrelationEngine
 from app.detection.dependencies import get_detection_engine, reset_detection_state
 from app.detection.engine import DetectionEngine
 from app.detection.models import DetectionAction
-from app.incidents.dependencies import get_incident_repository, get_incident_service
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    get_incident_service,
+    set_custom_incident_db_path,
+)
 from app.incidents.models import IncidentStatus, Severity
 from app.incidents.repository import InMemoryIncidentRepository
 from app.incidents.service import IncidentService
@@ -26,8 +31,10 @@ from app.watcher.storage import SqliteTelemetryStore
 
 
 @pytest.fixture(autouse=True)
-def clean_environment():
+def clean_environment(tmp_path):
     """Ensure clean isolated environment before and after each test."""
+    test_db = str(tmp_path / "sentinelops_test.db")
+    set_custom_incident_db_path(test_db)
     reset_watcher_state()
     reset_detection_state()
     reset_correlation_state()
@@ -38,6 +45,8 @@ def clean_environment():
     reset_detection_state()
     reset_correlation_state()
     get_incident_repository().clear()
+    close_incident_repository()
+    set_custom_incident_db_path(None)
     get_evidence_repository().clear()
 
 

@@ -116,9 +116,9 @@ class IncidentService:
             raise IncidentNotFoundError(incident_id)
         return incident
 
-    def list_incidents(self) -> List[Incident]:
-        """Return all active and historical incidents."""
-        return self._repository.list_all()
+    def list_incidents(self, project_id: Optional[str] = None) -> List[Incident]:
+        """Return all active and historical incidents, optionally filtered by project_id."""
+        return self._repository.list_all(project_id=project_id)
 
     def update_status(self, incident_id: str, new_status: IncidentStatus) -> Incident:
         """Validate and apply a lifecycle status transition, advancing updated_at."""

@@ -1,7 +1,7 @@
 """FastAPI HTTP routes for Incident domain operations."""
 
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.incidents.dependencies import get_incident_service
 from app.incidents.schemas import (
@@ -40,10 +40,11 @@ def create_incident(
     summary="List all incidents",
 )
 def list_incidents(
+    project_id: Optional[str] = Query(default=None, description="Optional project filter"),
     service: IncidentService = Depends(get_incident_service),
 ) -> List[IncidentResponse]:
-    """Retrieve all active and recorded incidents."""
-    incidents = service.list_incidents()
+    """Retrieve all active and recorded incidents, optionally filtered by project_id."""
+    incidents = service.list_incidents(project_id=project_id)
     return [IncidentResponse.model_validate(i) for i in incidents]
 
 

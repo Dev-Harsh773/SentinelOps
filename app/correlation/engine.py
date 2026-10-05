@@ -52,6 +52,21 @@ class CorrelationEngine:
         self._errors_count: int = 0
 
     @property
+    def incident_service(self) -> IncidentService:
+        """Resolve active incident service, re-fetching if the connection was closed."""
+        repo = getattr(self._incident_service, "_repository", None)
+        if repo is not None and getattr(repo, "_conn", None) is not None:
+            try:
+                repo._conn.total_changes
+                return self._incident_service
+            except Exception:
+                from app.incidents.dependencies import get_incident_service
+                self._incident_service = get_incident_service()
+                return self._incident_service
+        from app.incidents.dependencies import get_incident_service
+        return self._incident_service or get_incident_service()
+
+    @property
     def active_correlations(self) -> Dict[str, ActiveIncidentCorrelation]:
         """Return active correlation records mapped by correlation_id."""
         return dict(self._active_correlations)
@@ -235,7 +250,7 @@ class CorrelationEngine:
 
         # Validate incident lifecycle status
         try:
-            incident = self._incident_service.get_incident(record.incident_id)
+            incident = self.incident_service.get_incident(record.incident_id)
             if incident.status not in (IncidentStatus.OPEN, IncidentStatus.INVESTIGATING):
                 self._remove_correlation(record.correlation_id)
                 return DetectionResult(
@@ -324,7 +339,7 @@ class CorrelationEngine:
 
             # Verify active incident lifecycle status
             try:
-                incident = self._incident_service.get_incident(record.incident_id)
+                incident = self.incident_service.get_incident(record.incident_id)
                 if incident.status in (IncidentStatus.OPEN, IncidentStatus.INVESTIGATING):
                     # Incident is actively ongoing -> Correlate or Suppress
                     fingerprint = self._compute_suppression_fingerprint(event, match)
@@ -413,7 +428,7 @@ class CorrelationEngine:
         existing_incident_id = self._active_fingerprints.get(fingerprint)
         if existing_incident_id:
             try:
-                incident = self._incident_service.get_incident(existing_incident_id)
+                incident = self.incident_service.get_incident(existing_incident_id)
                 if incident.status in (IncidentStatus.OPEN, IncidentStatus.INVESTIGATING):
                     self._suppressions_count += 1
                     return DetectionResult(
@@ -442,7 +457,7 @@ class CorrelationEngine:
             environment=event.environment,
             project_id=event.project_id,
         )
-        created_incident = self._incident_service.create_incident(req)
+        created_incident = self.incident_service.create_incident(req)
 
         # Persist primary triggering evidence in reserved Slot 1
         evidence_type = (
@@ -635,7 +650,7 @@ class CorrelationEngine:
         existing_id = self._active_fingerprints.get(fingerprint)
         if existing_id:
             try:
-                incident = self._incident_service.get_incident(existing_id)
+                incident = self.incident_service.get_incident(existing_id)
                 if incident.status in (IncidentStatus.OPEN, IncidentStatus.INVESTIGATING):
                     self._suppressions_count += 1
                     return DetectionResult(
@@ -658,7 +673,7 @@ class CorrelationEngine:
             environment=event.environment,
             project_id=event.project_id,
         )
-        created_incident = self._incident_service.create_incident(req)
+        created_incident = self.incident_service.create_incident(req)
         ev_type = (
             EvidenceType.HEALTH_CHECK
             if event.signal_type == SignalType.HEALTH

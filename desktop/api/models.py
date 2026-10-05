@@ -492,3 +492,87 @@ class WatcherStatusDTO:
             buffer_count=int(buf.get("count", 0)),
             buffer_capacity=int(buf.get("capacity", 0)),
         )
+
+
+@dataclass
+class SafeActionDTO:
+    action_id: str
+    project_id: str
+    incident_id: Optional[str]
+    action_type: str
+    target_type: str
+    target_id: str
+    parameters: Dict[str, Any]
+    fingerprint: str
+    requested_by_claim: str
+    risk_level: str
+    policy_status: str
+    approval_status: str
+    execution_status: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    policy_denial_reason: Optional[str] = None
+    approved_by_claim: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    approved_fingerprint: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    executed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    execution_result: Optional[Dict[str, Any]] = None
+    failure_reason: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SafeActionDTO":
+        return cls(
+            action_id=str(data.get("action_id", "")),
+            project_id=str(data.get("project_id", "")),
+            incident_id=data.get("incident_id"),
+            action_type=str(data.get("action_type", "")),
+            target_type=str(data.get("target_type", "")),
+            target_id=str(data.get("target_id", "")),
+            parameters=dict(data.get("parameters", {})),
+            fingerprint=str(data.get("fingerprint", "")),
+            requested_by_claim=str(data.get("requested_by_claim", "")),
+            risk_level=str(data.get("risk_level", "low")),
+            policy_status=str(data.get("policy_status", "allowed")),
+            approval_status=str(data.get("approval_status", "pending")),
+            execution_status=str(data.get("execution_status", "not_started")),
+            created_at=_parse_datetime(data.get("created_at")),
+            updated_at=_parse_datetime(data.get("updated_at")),
+            policy_denial_reason=data.get("policy_denial_reason"),
+            approved_by_claim=data.get("approved_by_claim"),
+            approved_at=_parse_datetime(data.get("approved_at")),
+            approved_fingerprint=data.get("approved_fingerprint"),
+            rejection_reason=data.get("rejection_reason"),
+            executed_at=_parse_datetime(data.get("executed_at")),
+            completed_at=_parse_datetime(data.get("completed_at")),
+            execution_result=data.get("execution_result"),
+            failure_reason=data.get("failure_reason"),
+        )
+
+
+@dataclass
+class ActionAuditDTO:
+    audit_id: str
+    action_id: str
+    event_type: str
+    actor_claim: str
+    previous_state: Dict[str, Any]
+    new_state: Dict[str, Any]
+    message: str
+    payload: Optional[Dict[str, Any]] = None
+    created_at: Optional[datetime] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ActionAuditDTO":
+        return cls(
+            audit_id=str(data.get("audit_id", "")),
+            action_id=str(data.get("action_id", "")),
+            event_type=str(data.get("event_type", "")),
+            actor_claim=str(data.get("actor_claim", "")),
+            previous_state=dict(data.get("previous_state", {})),
+            new_state=dict(data.get("new_state", {})),
+            message=str(data.get("message", "")),
+            payload=data.get("payload"),
+            created_at=_parse_datetime(data.get("created_at")),
+        )

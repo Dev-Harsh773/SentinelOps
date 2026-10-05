@@ -63,7 +63,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.offline_banner)
 
         # 2. Header Bar
-        self.header = HeaderBar(on_refresh=self.poller.trigger_immediate_refresh, parent=central)
+        self.header = HeaderBar(on_refresh=self._on_global_refresh, parent=central)
         root_layout.addWidget(self.header)
 
         # 3. Main Workspace: Sidebar + Stacked Views
@@ -106,8 +106,18 @@ class MainWindow(QMainWindow):
         # Start background polling
         self.poller.start()
 
+    def _on_global_refresh(self) -> None:
+        """Trigger immediate background poller refresh AND invoke active view refresh."""
+        self.poller.trigger_immediate_refresh()
+        active = self.stack.currentWidget()
+        if hasattr(active, "refresh") and callable(active.refresh):
+            active.refresh()
+
     def _on_navigation(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
+        active = self.stack.widget(index)
+        if hasattr(active, "on_view_activated") and callable(active.on_view_activated):
+            active.on_view_activated()
 
     def _on_active_project_changed(self, project_id: str) -> None:
         self.setWindowTitle(f"SentinelOps Control Center — {project_id}")

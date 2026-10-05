@@ -11,6 +11,15 @@ from app.common.logging import logger
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown lifecycle events."""
     logger.info("Starting %s in %s environment", config.app_name, config.app_env)
+    # Reconcile orphaned SafeAction execution claims across backend restart
+    from app.actions.dependencies import reconcile_interrupted_actions
+    reconciled_actions = reconcile_interrupted_actions()
+    if reconciled_actions:
+        logger.warning(
+            "Reconciled %d orphaned SafeAction execution(s) across backend restart to ABORTED: %s",
+            len(reconciled_actions),
+            [a.action_id for a in reconciled_actions],
+        )
     watcher_service = None
     if config.watcher_enabled:
         from app.watcher.dependencies import get_watcher_service
@@ -35,12 +44,18 @@ async def lifespan(app: FastAPI):
             await connector_runtime.stop()
         if watcher_service:
             await watcher_service.stop()
+        from app.watcher.dependencies import reset_watcher_state
+        reset_watcher_state()
+        from app.actions.dependencies import close_action_store
+        close_action_store()
         from app.notifications.dependencies import close_notification_store
         close_notification_store()
         from app.connectors.dependencies import close_connector_store
         close_connector_store()
         from app.projects.dependencies import close_project_store
         close_project_store()
+        from app.incidents.dependencies import close_incident_repository
+        close_incident_repository()
         logger.info("Shutting down %s", config.app_name)
 
 

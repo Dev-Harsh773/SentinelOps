@@ -4,20 +4,25 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from app.incidents.dependencies import get_incident_repository
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    reset_incident_state,
+    set_custom_incident_db_path,
+)
 from app.main import app
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def reset_incident_storage():
-    """Ensure in-memory repository is cleared before each test for total test isolation."""
-    repo = get_incident_repository()
-    # InMemoryIncidentRepository provides clear() exclusively for test isolation
-    repo.clear()
+def reset_incident_storage(tmp_path):
+    """Ensure repository is isolated in a temporary SQLite DB before each test."""
+    test_db = str(tmp_path / "sentinelops_test.db")
+    reset_incident_state(db_path=test_db)
     yield
-    repo.clear()
+    close_incident_repository()
+    set_custom_incident_db_path(None)
 
 
 def test_create_incident_success():

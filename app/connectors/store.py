@@ -47,7 +47,7 @@ class SqliteConnectorStore:
         if self._db_path != ":memory:":
             os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=30.0)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
 

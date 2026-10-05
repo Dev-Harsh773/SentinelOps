@@ -26,6 +26,7 @@ from desktop.api.models import (
     RemediationBranchDTO,
     RemediationDTO,
     RemediationReviewDTO,
+    SafeActionDTO,
     WatcherStatusDTO,
 )
 
@@ -149,9 +150,10 @@ class SentinelOpsClient:
     # Incidents
     # -------------------------------------------------------------------------
 
-    def list_incidents(self) -> List[IncidentDTO]:
-        """Fetch all incidents (caller may filter by project_id)."""
-        data = self._request("GET", "/incidents")
+    def list_incidents(self, project_id: Optional[str] = None) -> List[IncidentDTO]:
+        """Fetch incidents, optionally filtered by project_id."""
+        params = {"project_id": project_id} if project_id else None
+        data = self._request("GET", "/incidents", params=params)
         return [IncidentDTO.from_dict(i) for i in data]
 
     def get_incident(self, incident_id: str) -> IncidentDTO:
@@ -248,3 +250,88 @@ class SentinelOpsClient:
     def test_connector(self, connector_id: str) -> Dict[str, Any]:
         """Perform non-mutating connectivity test."""
         return self._request("POST", f"/connectors/{connector_id}/test")
+
+    # -------------------------------------------------------------------------
+    # Safe Actions
+    # -------------------------------------------------------------------------
+
+    def list_actions(
+        self,
+        project_id: Optional[str] = None,
+        incident_id: Optional[str] = None,
+        approval_status: Optional[str] = None,
+        execution_status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[SafeActionDTO]:
+        """Fetch filtered safe actions."""
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if project_id:
+            params["project_id"] = project_id
+        if incident_id:
+            params["incident_id"] = incident_id
+        if approval_status:
+            params["approval_status"] = approval_status
+        if execution_status:
+            params["execution_status"] = execution_status
+        data = self._request("GET", "/actions", params=params)
+        return [SafeActionDTO.from_dict(a) for a in data]
+
+    def get_action(self, action_id: str) -> SafeActionDTO:
+        """Fetch a single safe action by ID."""
+        data = self._request("GET", f"/actions/{action_id}")
+        return SafeActionDTO.from_dict(data)
+
+    def propose_action(
+        self,
+        project_id: str,
+        action_type: str,
+        target_type: str,
+        target_id: str,
+        operator_claim: str,
+        incident_id: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> SafeActionDTO:
+        """Propose a safe operational action."""
+        payload = {
+            "project_id": project_id,
+            "incident_id": incident_id,
+            "action_type": action_type,
+            "target_type": target_type,
+            "target_id": target_id,
+            "operator_claim": operator_claim,
+            "parameters": parameters or {},
+        }
+        data = self._request("POST", "/actions/propose", json=payload)
+        return SafeActionDTO.from_dict(data)
+
+    def approve_action(
+        self,
+        action_id: str,
+        operator_claim: str,
+        comment: Optional[str] = None,
+    ) -> SafeActionDTO:
+        """Submit explicit human approval for a pending safe action."""
+        payload = {"operator_claim": operator_claim, "comment": comment}
+        data = self._request("POST", f"/actions/{action_id}/approve", json=payload)
+        return SafeActionDTO.from_dict(data)
+
+    def reject_action(
+        self,
+        action_id: str,
+        operator_claim: str,
+        reason: str,
+    ) -> SafeActionDTO:
+        """Submit explicit human rejection for a pending safe action."""
+        payload = {"operator_claim": operator_claim, "reason": reason}
+        data = self._request("POST", f"/actions/{action_id}/reject", json=payload)
+        return SafeActionDTO.from_dict(data)
+
+    def execute_action(self, action_id: str) -> SafeActionDTO:
+        """Trigger execution of an approved safe action."""
+        data = self._request("POST", f"/actions/{action_id}/execute")
+        return SafeActionDTO.from_dict(data)
+
+    def get_action_audit(self, action_id: str) -> List[Dict[str, Any]]:
+        """Fetch complete audit history for a safe action."""
+        return self._request("GET", f"/actions/{action_id}/audit")

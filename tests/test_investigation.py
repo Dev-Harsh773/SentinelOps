@@ -28,7 +28,12 @@ from app.agents.models import (
 )
 from app.agents.repository import InMemoryInvestigationRepository
 from app.agents.service import InvestigationService
-from app.incidents.dependencies import get_incident_repository, get_incident_service
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    get_incident_service,
+    set_custom_incident_db_path,
+)
 from app.main import app
 from app.repository.client import GitClient
 from app.repository.dependencies import get_git_service
@@ -107,8 +112,10 @@ def test_git_repo(tmp_path: Path):
 
 
 @pytest.fixture(autouse=True)
-def clean_repositories():
+def clean_repositories(tmp_path):
     """Ensure in-memory repositories are cleared before each test."""
+    test_db = str(tmp_path / "sentinelops_test.db")
+    set_custom_incident_db_path(test_db)
     app.dependency_overrides.clear()
     get_incident_repository().clear()
     get_evidence_repository().clear()
@@ -117,6 +124,8 @@ def clean_repositories():
     yield
     app.dependency_overrides.clear()
     get_incident_repository().clear()
+    close_incident_repository()
+    set_custom_incident_db_path(None)
     get_evidence_repository().clear()
     get_investigation_repository().clear()
     get_code_index().clear()

@@ -4,7 +4,11 @@ import json
 from fastapi.testclient import TestClient
 import pytest
 
-from app.incidents.dependencies import get_incident_repository
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    set_custom_incident_db_path,
+)
 from app.main import app as sentinelops_app
 from app.telemetry.collector import RuntimeLogCollector
 from app.telemetry.dependencies import get_evidence_repository, get_log_collector
@@ -17,8 +21,10 @@ demo_client = TestClient(demo_app)
 
 
 @pytest.fixture(autouse=True)
-def reset_repositories_and_failures():
+def reset_repositories_and_failures(tmp_path):
     """Ensure in-memory repositories, dependency overrides, and failure modes are reset."""
+    test_db = str(tmp_path / "sentinelops_test.db")
+    set_custom_incident_db_path(test_db)
     sentinelops_app.dependency_overrides.clear()
     get_incident_repository().clear()
     get_evidence_repository().clear()
@@ -26,6 +32,8 @@ def reset_repositories_and_failures():
     yield
     sentinelops_app.dependency_overrides.clear()
     get_incident_repository().clear()
+    close_incident_repository()
+    set_custom_incident_db_path(None)
     get_evidence_repository().clear()
     get_failure_controller().reset()
 

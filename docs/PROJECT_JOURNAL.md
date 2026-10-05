@@ -1,4 +1,4 @@
-﻿# SentinelOps — Project Journal
+# SentinelOps — Project Journal
 
 This living journal documents engineering decisions, problem-solving history, and stage completion records across the lifecycle of SentinelOps.
 
@@ -1573,3 +1573,89 @@ Build a native Android thin client for SentinelOps in 100% Java 17 using Android
 
 ### User Approval
 Approved
+
+---
+
+## Stage 18 — Safe Action Framework
+
+### Objective
+Implement an explicit, human-approved operational safe action execution framework adhering strictly to the product principle:
+`DETECT → UNDERSTAND → EXPLAIN → REMEMBER → RECOMMEND → POLICY CHECK 1 → HUMAN APPROVAL → POLICY CHECK 2 → SAFE EXECUTION → AUDIT RESULT`.
+Establish a first-class `SafeAction` entity separate from textual remediation proposals, an immutable fingerprinting snapshot, a strict deny-by-default dual-gated policy engine, allowlisted safe action executors (`TEST_CONNECTOR` and `RETRY_NOTIFICATION`), transactional multi-process concurrency locks in SQLite, append-only immutable audit history, and desktop control center integration.
+
+### Design Decisions
+- **Domain Decoupling & Immutability**:
+  - Created first-class `SafeAction` and `ActionAuditRecord` domain models completely decoupled from `RemediationProposal`.
+  - All action execution parameters, target identifiers, and risk classifications are immutable once proposed.
+  - Implemented deterministic SHA-256 fingerprint snapshot (`compute_action_fingerprint`) capturing `(action_type, target_type, target_id, project_id, incident_id, risk_level, parameters)`.
+  - Human approval records `approved_fingerprint`. Execution re-verifies `fingerprint == approved_fingerprint`.
+  - Banned client parameter duplication (parameters must be strictly `{}` for Stage 18 actions; target IDs are referenced strictly via `action.target_id`).
+- **Strict Approval Invariant (Zero Bypass)**:
+  - Eliminated `ApprovalStatus.NOT_REQUIRED`. Every executable action requires explicit human approval.
+- **Terminal Proposal-Denial Semantics**:
+  - When an action is denied by Policy Check #1, it is immediately finalized in terminal states: `policy_status = DENIED`, `approval_status = CANCELLED`, `execution_status = ABORTED`.
+  - Appends `POLICY_EVALUATED` and `POLICY_DENIED` audit events with explicit denial rationale.
+  - Scoped the unique active target index `idx_safe_actions_unique_active_target` to `WHERE policy_status = 'allowed'`, ensuring denied actions never block subsequent valid actions for the same target.
+- **Initial Allowlist of Safe Actions**:
+  - `TEST_CONNECTOR`: Bounded, non-mutating diagnostic probe on a registered project connector. URL and credentials resolved strictly from trusted persisted connector configuration in `runtime/sentinelops.db`.
+  - `RETRY_NOTIFICATION`: Bounded, low-risk mutating operational requeue for a failed notification. Enforces atomic conditional state transition `FAILED -> PENDING` at the notification store boundary.
+  - `HEALTH_PROBE` was explicitly excluded from Stage 18 to prevent accepting client-supplied URLs.
+- **Atomic Authoritative SQLite Execution Claim**:
+  - Handled multi-process / multi-worker concurrency using SQLite `BEGIN IMMEDIATE` write transactions in `SqliteActionStore`.
+  - Combines fingerprint verification, target existence in database, project boundary matching, and state transition `APPROVED + NOT_STARTED -> EXECUTING` into a single transaction.
+  - In-memory `asyncio` locks serve strictly as a local scheduling optimization and are not relied upon for correctness.
+- **Atomic Precondition Side-Effect Validation**:
+  - `RETRY_NOTIFICATION` conditionally updates `WHERE notification_id = ? AND delivery_status = 'failed'`.
+  - If notification state has drifted, execution halts immediately without requeuing, transitions the action to `ABORTED`, records `PREREQUISITE_CONFLICT_ABORTED` in the audit log, and preserves the actual current notification state in the failure reason.
+- **Audit Immutability & Retention**:
+  - Enforced `ON DELETE RESTRICT` on foreign keys between `projects`, `safe_actions`, and `action_audit_records`.
+  - Omitted hard-delete APIs; treated action and audit logs as append-only operational history.
+  - Action state transitions and corresponding audit events are persisted atomically within the same write transaction.
+- **Actor Identity Attribution**:
+  - Client-supplied identities are explicitly modeled as unauthenticated operator claims (`requested_by_claim`, `approved_by_claim`, `actor_claim`), maintaining a clean path for Stage 20 authenticated principal integration.
+- **Desktop Control Center UI**:
+  - Extended PyQt6 `IncidentsView` with a dedicated "Safe Actions" tab displaying action cards, risk badges, status badges, fingerprint snippets, and asynchronous Approve / Reject / Execute buttons wired to `TaskRunner`.
+- **Android Client Scope Freeze**:
+  - Maintained zero modifications to the Stage 17 Android client codebase, preserving its verified stability.
+
+### Files Added / Changed
+- `app/actions/__init__.py`: Package initialization.
+- `app/actions/models.py`: Domain dataclasses (`SafeAction`, `ActionAuditRecord`, `ActionResult`), enums (`ActionType`, `TargetType`, `RiskLevel`, `PolicyStatus`, `ApprovalStatus`, `ExecutionStatus`), and `compute_action_fingerprint`.
+- `app/actions/policy.py`: `ActionPolicyEngine` with deny-by-default allowlist, target compatibility, empty parameter validation, project boundary, incident liveness, and active action uniqueness checks.
+- `app/actions/executors/base.py`: `BaseActionExecutor` abstract base class.
+- `app/actions/executors/connector_test.py`: `ConnectorTestExecutor` diagnostic executor.
+- `app/actions/executors/notification_retry.py`: `NotificationRetryExecutor` with `PrerequisiteConflictError`.
+- `app/actions/executors/registry.py`: `ActionExecutorRegistry`.
+- `app/actions/executors/__init__.py`: Executor exports.
+- `app/actions/store.py`: `SqliteActionStore` with WAL mode, `ON DELETE RESTRICT`, `idx_safe_actions_unique_active_target`, and atomic transactional state transitions.
+- `app/actions/service.py`: `ActionService` orchestrating propose, dual policy checks, approve, reject, execute claim, timeout, and audit logging.
+- `app/actions/schemas.py`: Pydantic request and response schemas.
+- `app/actions/dependencies.py`: FastAPI dependency injection providers with isolated test DB path redirection.
+- `app/actions/routes.py`: FastAPI endpoints under `/actions` (`/propose`, `GET /actions`, `/{id}`, `/{id}/approve`, `/{id}/reject`, `/{id}/execute`, `/{id}/audit`).
+- `app/api/__init__.py`: Registered `actions_router`.
+- `app/main.py`: Registered `close_action_store` in lifespan shutdown.
+- `app/notifications/store.py`: Added `atomic_reset_failed_for_retry` conditional update method.
+- `app/notifications/service.py`: Added `atomic_retry_notification` to `NotificationService`.
+- `desktop/api/models.py`: Added `SafeActionDTO` and `ActionAuditDTO`.
+- `desktop/api/client.py`: Added `list_actions`, `get_action`, `propose_action`, `approve_action`, `reject_action`, `execute_action`, `get_action_audit`.
+- `desktop/ui/views/incidents_view.py`: Added Tab 5 "Safe Actions" to drawer with status badges, fingerprint, and async Approve / Reject / Execute buttons.
+- `tests/test_actions_domain.py`: Unit tests for domain models, enums, and fingerprinting.
+- `tests/test_actions_policy.py`: Policy engine tests for allowlist, target types, empty parameters, project boundary, incident liveness, and terminal denial semantics.
+- `tests/test_actions_executors.py`: Unit tests for `ConnectorTestExecutor` and `NotificationRetryExecutor`.
+- `tests/test_actions_store.py`: Store persistence tests for unique index, atomic approval, rejection, claim locking, fingerprint mismatch, and audit immutability.
+- `tests/test_actions_service.py`: End-to-end service tests, concurrency race tests, and timeout tests.
+- `tests/test_actions_api.py`: FastAPI integration tests.
+- `tests/desktop/test_desktop_actions.py`: Desktop DTO and client tests.
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 18 entry.
+
+### Verification
+- **Automated Test Suite**:
+  - Executed `python -m pytest tests/test_actions_* tests/desktop/test_desktop_actions.py -v`: all 31 new Stage 18 tests passed in 6.65s.
+  - Executed `python -m pytest tests/desktop/ -v`: all 45 desktop tests passed in 3.02s.
+  - Executed full project regression suite `python -m pytest`: all 410 tests passed in 71.23s with 100% pass rate (379 baseline tests across Stages 0–17 + 31 new Stage 18 tests; zero regressions).
+- **Codebase Integrity**:
+  - Executed `git diff --check` with 0 whitespace or formatting issues.
+  - Verified Android mobile client (`android/`) remains completely untouched.
+
+### User Approval
+Pending Verification

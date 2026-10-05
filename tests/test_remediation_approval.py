@@ -20,7 +20,11 @@ from app.agents.models import (
     RuntimeAnalysis,
 )
 from app.common.config import config
-from app.incidents.dependencies import get_incident_repository
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    set_custom_incident_db_path,
+)
 from app.incidents.models import Incident, IncidentStatus, Severity
 from app.main import app
 from app.memory.dependencies import reset_memory_repository
@@ -55,8 +59,10 @@ from app.telemetry.models import Evidence, EvidenceType
 
 
 @pytest.fixture(autouse=True)
-def clean_repositories():
+def clean_repositories(tmp_path):
     """Ensure all in-memory repositories are cleared before and after each test."""
+    test_db = str(tmp_path / "sentinelops_test.db")
+    set_custom_incident_db_path(test_db)
     reset_memory_repository()
     reset_remediation_repository()
     reset_review_repository()
@@ -70,6 +76,8 @@ def clean_repositories():
     reset_review_repository()
     reset_branch_repository()
     get_incident_repository().clear()
+    close_incident_repository()
+    set_custom_incident_db_path(None)
     get_evidence_repository().clear()
     get_investigation_repository().clear()
 

@@ -24,7 +24,11 @@ from fastapi.testclient import TestClient
 
 from app.agents.dependencies import get_investigation_repository
 from app.common.config import config
-from app.incidents.dependencies import get_incident_repository
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    set_custom_incident_db_path,
+)
 from app.knowledge.dependencies import reset_knowledge_state
 from app.main import app
 from app.projects.dependencies import (
@@ -48,6 +52,7 @@ def cleanup_all_state(tmp_path: Path) -> Generator[None, None, None]:
     """Ensure complete test isolation across all SentinelOps components using an isolated temporary SQLite DB."""
     test_db = str(tmp_path / "sentinelops_test.db")
     set_custom_project_db_path(test_db)
+    set_custom_incident_db_path(test_db)
 
     app.dependency_overrides.clear()
     reset_project_state()
@@ -67,10 +72,12 @@ def cleanup_all_state(tmp_path: Path) -> Generator[None, None, None]:
 
     app.dependency_overrides.clear()
     reset_project_state()
+    close_project_store()
+    close_incident_repository()
     set_custom_project_db_path(None)
+    set_custom_incident_db_path(None)
     reset_knowledge_state()
     get_investigation_repository().clear()
-    get_incident_repository().clear()
     get_evidence_repository().clear()
     reset_watcher_state()
 

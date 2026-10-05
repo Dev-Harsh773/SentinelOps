@@ -27,7 +27,12 @@ from app.connectors.dependencies import (
     reset_connector_state,
     set_custom_connector_db_path,
 )
-from app.incidents.dependencies import get_incident_repository
+from app.incidents.dependencies import (
+    close_incident_repository,
+    get_incident_repository,
+    reset_incident_state,
+    set_custom_incident_db_path,
+)
 from app.knowledge.dependencies import reset_knowledge_state
 from app.main import app
 from app.projects.dependencies import (
@@ -50,13 +55,14 @@ def isolated_test_environment(tmp_path: Path) -> Generator[None, None, None]:
     # Set both project and connector store to the SAME temporary database file
     set_custom_project_db_path(test_db)
     set_custom_connector_db_path(test_db)
+    set_custom_incident_db_path(test_db)
 
     app.dependency_overrides.clear()
     reset_project_state()
     reset_connector_state(db_path=test_db)
+    reset_incident_state(db_path=test_db)
     reset_knowledge_state()
     get_investigation_repository().clear()
-    get_incident_repository().clear()
     get_evidence_repository().clear()
     reset_watcher_state()
 
@@ -69,8 +75,10 @@ def isolated_test_environment(tmp_path: Path) -> Generator[None, None, None]:
 
     yield
 
+    close_incident_repository()
     close_connector_store()
     close_project_store()
+    set_custom_incident_db_path(None)
     set_custom_project_db_path(None)
     set_custom_connector_db_path(None)
 

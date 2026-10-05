@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from app.connectors.models import OperationalStatus
@@ -431,6 +431,24 @@ class NotificationService:
         if self._runtime:
             self._runtime.wake()
         return self._to_notification_response(updated)
+
+    def atomic_retry_notification(
+        self, notification_id: str
+    ) -> Tuple[bool, Optional[NotificationResponse], Optional[DeliveryStatus]]:
+        """Atomically re-triggers delivery for a failed notification if and only if still FAILED.
+
+        Returns:
+            (True, notification_response, None) on success.
+            (False, notification_response, current_status) if status is no longer FAILED.
+            (False, None, None) if notification does not exist.
+        """
+        now = datetime.now(timezone.utc)
+        success, notif, current_status = self._store.atomic_reset_failed_for_retry(notification_id, now)
+        if success and notif:
+            if self._runtime:
+                self._runtime.wake()
+            return True, self._to_notification_response(notif), None
+        return False, self._to_notification_response(notif) if notif else None, current_status
 
     # -------------------------------------------------------------------------
     # Helper Mappings
