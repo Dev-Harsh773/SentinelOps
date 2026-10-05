@@ -1650,12 +1650,35 @@ Establish a first-class `SafeAction` entity separate from textual remediation pr
 
 ### Verification
 - **Automated Test Suite**:
-  - Executed `python -m pytest tests/test_actions_* tests/desktop/test_desktop_actions.py -v`: all 31 new Stage 18 tests passed in 6.65s.
-  - Executed `python -m pytest tests/desktop/ -v`: all 45 desktop tests passed in 3.02s.
-  - Executed full project regression suite `python -m pytest`: all 410 tests passed in 71.23s with 100% pass rate (379 baseline tests across Stages 0–17 + 31 new Stage 18 tests; zero regressions).
+  - Full repository regression suite executed via `python -m pytest tests/ -q`: **451 passed in 81.97s (100% pass rate, zero failures, zero regressions)**.
+  - Dedicated Stage 18 persistence & lifecycle suite (`python -m pytest tests/test_incidents_persistence.py -v`): 10 passed in 15.45s.
+  - Desktop automated suite (`python -m pytest tests/desktop/ -v`): 45 passed in 3.02s.
+- **Canary & Persistence Verification**:
+  - Final canary incident: `3ec5213d-fecf-4cf5-9cf8-94148cbe7fd6` (project `stage14-alpha`).
+  - Canary survived the complete 451-test pytest suite completely unchanged and queryable.
+  - Incident persistence across backend stop/restart fully verified in SQLite (`runtime/sentinelops.db`).
+  - Test-isolation defect fixed: legacy tests and test fixtures run strictly with isolated custom SQLite database paths and no longer clear or overwrite `runtime/sentinelops.db`.
+- **Safe Action Operational Verification**:
+  - `TEST_CONNECTOR` success path verified.
+  - `TEST_CONNECTOR` failure path verified.
+  - Pre-approval execution strictly blocked.
+  - Rejection path verified (`REJECTED` / `ABORTED`).
+  - Policy denial verified with terminal states (`DENIED` / `CANCELLED` / `ABORTED`).
+  - Active-target uniqueness protection verified.
+  - `RETRY_NOTIFICATION` success path verified.
+  - Prerequisite conflict path verified: atomic conditional update failure returns HTTP 409 and action transitions safely to `ABORTED` with `PREREQUISITE_CONFLICT_ABORTED` audit record.
+  - Zero stranded `EXECUTING` actions; deterministic backend startup reconciliation transitions any orphaned executing action across restart to `ABORTED` while preserving human approval.
+- **Desktop Control Center Verification**:
+  - Project-scoped incident refresh verified.
+  - Cross-project incident table flashing defect resolved.
+  - Backend reconnect behavior verified.
+  - Stale drawer detail clearing on incident switch verified.
+  - Safe Actions tab reload and action state synchronization verified.
+- **Lifecycle & Dependency Stability**:
+  - Stale SQLite connection retention across restart in correlation and watcher engines resolved and regression-tested (`test_watcher_and_correlation_after_restart_creates_fresh_dependencies`).
 - **Codebase Integrity**:
-  - Executed `git diff --check` with 0 whitespace or formatting issues.
-  - Verified Android mobile client (`android/`) remains completely untouched.
+  - Android mobile client (`android/`) remained completely untouched.
+  - `git diff --check` passed cleanly with 0 whitespace issues.
 
 ### User Approval
-Pending Verification
+Approved
