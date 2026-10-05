@@ -1,0 +1,20 @@
+# Exclude tests and development trees from sdist
+prune tests
+prune android
+prune runtime
+prune demo_app
+prune docs
+prune build
+prune dist
+prune .pytest_cache
+prune .idea
+prune .vscode
+
+# Exclude environment, secrets, database and runtime log files
+exclude .env*
+exclude runtime/*.db*
+exclude runtime/*.jsonl
+exclude *.db*
+exclude *.jsonl
+exclude desktop/control_center.spec
+exclude desktop/package_control_center.py

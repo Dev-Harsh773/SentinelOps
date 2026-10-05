@@ -162,6 +162,26 @@ class NotificationDeliveryRuntime:
             )
             return
 
+        from app.common.security import SSRFGuard, SSRFValidationError
+        from app.connectors.redaction import scrub_string
+
+        # If a mock transport is explicitly injected for testing, skip external DNS resolution
+        is_mock_client = self._http_client is not None and getattr(self._http_client, "_transport", None) is not None and isinstance(self._http_client._transport, httpx.MockTransport)
+
+        if not is_mock_client:
+            try:
+                SSRFGuard.validate_url(raw_url)
+            except SSRFValidationError as ssrf_exc:
+                self._store.update_delivery_outcome(
+                    notification_id=notif.notification_id,
+                    delivery_status=DeliveryStatus.FAILED,
+                    next_attempt_at=None,
+                    failure_reason=f"SSRF security violation: {ssrf_exc}",
+                    now=now,
+                )
+                logger.error("Blocked webhook delivery for %s: %s", notif.notification_id, ssrf_exc)
+                return
+
         # 2. Build serialized payload bytes and compute HMAC
         payload_data = {
             "notification_id": notif.notification_id,
@@ -229,16 +249,16 @@ class NotificationDeliveryRuntime:
 
             # Non-2xx response handling
             is_retryable = status_code in (408, 429) or (500 <= status_code <= 599)
-            error_reason = f"HTTP {status_code}: {response.text[:200]}"
+            error_reason = scrub_string(f"HTTP {status_code}: {response.text[:200]}")
             self._handle_failure(notif, is_retryable=is_retryable, error_reason=error_reason, now=now)
 
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RequestError) as exc:
             # Transport network failure is retryable
-            error_reason = f"Network transport error: {type(exc).__name__}: {str(exc)[:200]}"
+            error_reason = scrub_string(f"Network transport error: {type(exc).__name__}: {str(exc)[:200]}")
             self._handle_failure(notif, is_retryable=True, error_reason=error_reason, now=now)
         except Exception as exc:
             # Unexpected exception
-            error_reason = f"Unexpected client error: {type(exc).__name__}: {str(exc)[:200]}"
+            error_reason = scrub_string(f"Unexpected client error: {type(exc).__name__}: {str(exc)[:200]}")
             self._handle_failure(notif, is_retryable=False, error_reason=error_reason, now=now)
 
     def _handle_failure(self, notif: Notification, is_retryable: bool, error_reason: str, now: datetime) -> None:

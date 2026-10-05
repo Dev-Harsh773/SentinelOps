@@ -71,12 +71,21 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """Application factory for configuring and assembling FastAPI components."""
+    import uuid
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+    from fastapi.exceptions import RequestValidationError
+    from app.common.middleware import SecurityHeadersMiddleware, ContentLengthAndStreamLimitMiddleware
+
     application = FastAPI(
         title="SentinelOps",
         description="AI-assisted software reliability and incident-response platform",
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Register security middleware
+    application.add_middleware(SecurityHeadersMiddleware)
+    application.add_middleware(ContentLengthAndStreamLimitMiddleware)
 
     # Register aggregated API routes
     application.include_router(api_router)
@@ -89,6 +98,23 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=502,
             content={"detail": str(exc)},
+        )
+
+    @application.exception_handler(Exception)
+    async def unhandled_exception_handler(request, exc: Exception):
+        # Allow Starlette/FastAPI HTTPExceptions and validation errors to follow their normal handlers
+        if isinstance(exc, (StarletteHTTPException, RequestValidationError)):
+            raise exc
+
+        trace_id = str(uuid.uuid4())
+        logger.exception("Unhandled server exception [trace_id=%s]: %s", trace_id, exc)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "An unexpected internal server error occurred.",
+                "error_code": "INTERNAL_SERVER_ERROR",
+                "trace_id": trace_id,
+            },
         )
 
     return application

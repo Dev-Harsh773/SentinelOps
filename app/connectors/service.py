@@ -334,9 +334,24 @@ class ConnectorService:
             url = connector.config.url
             if not url:
                 return {"status": "error", "message": "No URL configured"}
+
+            from app.common.security import SSRFGuard, SSRFValidationError
+            from app.connectors.redaction import scrub_string
+
             start = time.perf_counter()
             try:
-                async with httpx.AsyncClient(timeout=connector.config.timeout_seconds) as client:
+                SSRFGuard.validate_url(url)
+            except SSRFValidationError as exc:
+                latency = (time.perf_counter() - start) * 1000.0
+                return {
+                    "status": "unreachable",
+                    "error": f"SSRF security policy violation: {exc}",
+                    "latency_ms": round(latency, 2),
+                    "url": url,
+                }
+
+            try:
+                async with httpx.AsyncClient(timeout=connector.config.timeout_seconds, follow_redirects=False) as client:
                     resp = await client.request(
                         method=connector.config.method,
                         url=url,
@@ -353,7 +368,7 @@ class ConnectorService:
                 latency = (time.perf_counter() - start) * 1000.0
                 return {
                     "status": "unreachable",
-                    "error": str(exc),
+                    "error": scrub_string(str(exc)),
                     "latency_ms": round(latency, 2),
                     "url": url,
                 }

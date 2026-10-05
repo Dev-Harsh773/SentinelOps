@@ -1785,3 +1785,70 @@ Stage 19 introduces a unified read-only incident report read model, an auditable
 
 ### User Approval
 Approved
+
+---
+
+## Stage 20 — Security, Hardening & Packaging
+
+### Objective
+Harden SentinelOps for safer non-development operation and provide reproducible packaging for the backend and Windows Control Center without adding product capabilities, expanding autonomous authority, introducing database schema migrations, or altering core investigation/remediation logic.
+
+### Design Decisions
+- **Outbound HTTP / SSRF Defense (`SSRFGuard`)**: Enforce pre-resolution and multi-record IP inspection immediately before outbound network side effects in connector testing, polling, and webhook delivery. Block cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`), link-local IPs, reserved/multicast ranges, and IPv4-mapped IPv6 across all environments. In production mode, strictly deny loopback and RFC 1918 private subnets unless explicitly listed in `ALLOWED_INTERNAL_HOSTS`. In development mode, allow `127.0.0.1` and `localhost` to preserve developer ergonomics. Configure HTTP clients with `follow_redirects=False`.
+- **Git Argument & Grammar Hardening**: Replace loose argument handling with domain-specific validators (`validate_branch_name`, `validate_commit_hash`, `validate_git_path`). Disallow arguments starting with hyphens to prevent CLI option injection. Separate options from pathspecs using `--` in `git diff-tree` and `git log` commands, while strictly respecting Git grammar in branch checkout (`git checkout -b <branch> <base_commit>`).
+- **Filesystem Boundary Safety (`PathJail`)**: Validate that all repository file accesses resolve strictly within the project workspace boundary. Safely detect and prune symlinks and directory junctions resolving outside the workspace during scanning.
+- **ASGI Security Middleware**: Implement `SecurityHeadersMiddleware` emitting `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, and `Content-Security-Policy: default-src 'self'`. Emit conditional HSTS only when native HTTPS or trusted forwarded HTTPS is present. Implement `ContentLengthAndStreamLimitMiddleware` enforcing caps on both Content-Length headers and streamed/chunked request bodies (10 MB default).
+- **Structured Sanitized Error Handling**: Replace raw 500 error propagation with a structured exception handler emitting JSON with an error code, user message, and unique `trace_id` while suppressing internal file paths and exception classes.
+- **Deterministic Secret Scrubbing**: Ensure all connector test failures and webhook delivery error reasons pass through `scrub_string()` before logging or storage.
+- **Reproducible Packaging**:
+  - Backend: Standard `pyproject.toml` configuration with pinned build dependencies (`build`, `wheel`, `pyinstaller`) and CLI entry point `sentinelops = "app.cli:main"` via new `app/cli.py`. Generates Wheel and source distribution with explicit exclusions of runtime databases, `.env`, and test artifacts.
+  - Windows Control Center: Standalone PyInstaller build pipeline via `desktop/control_center.spec` and runner `desktop/package_control_center.py` producing `dist/SentinelOpsControlCenter/SentinelOpsControlCenter.exe`. Verified via dedicated smoke test.
+
+### Files Added / Changed
+- `app/common/config.py`: Added security configuration settings (`allowed_internal_hosts`, `max_request_body_size`, `force_https`, `trusted_proxies`).
+- `app/common/security.py`: Added core domain security module with `SSRFGuard`, `PathJail`, and `GitArgumentValidator`.
+- `app/common/middleware.py`: Added `SecurityHeadersMiddleware` and `ContentLengthAndStreamLimitMiddleware`.
+- `app/main.py`: Mounted security middleware and structured unhandled exception handler in `create_app()`.
+- `app/connectors/service.py`: Integrated `SSRFGuard` validation and `scrub_string()` in `test_connector()`.
+- `app/connectors/poller.py`: Integrated `SSRFGuard` validation and `follow_redirects=False` in `execute_single_poll()`.
+- `app/notifications/delivery.py`: Integrated `SSRFGuard` validation and secret scrubbing on delivery failure reasons in `_deliver_webhook()`.
+- `app/repository/client.py`: Enforced `--` pathspec separators in `get_commit_diff()` and `get_file_history()`.
+- `app/repository/branch_manager.py`: Integrated `GitArgumentValidator` in `create_and_checkout_branch()` while maintaining correct Git grammar.
+- `MANIFEST.in`: Package manifest ensuring tests, runtime databases, environment files, and dev artifacts are excluded from the source distribution archive.
+- `app/cli.py`: Standalone CLI launcher for launching uvicorn backend.
+- `pyproject.toml`: Modern packaging specification declaring metadata, optional dependencies, build tooling, and CLI script.
+- `desktop/control_center.spec`: PyInstaller standalone bundle specification.
+- `desktop/package_control_center.py`: Standalone packaging runner.
+- `tests/test_stage20_security_hardening.py`: Unit and integration tests for SSRF, Git validation, PathJail, file symlinks, Windows NTFS directory junctions, security headers, body caps, error sanitization, and secret scrubbing (20 tests).
+- `tests/test_desktop_packaging_smoke.py`: Standalone packaged executable smoke test and archive exclusion inspection for both `.whl` and `.tar.gz` (2 tests).
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 20 implementation details.
+
+### Verification
+- **Automated Test Suite**:
+  - Full regression suite: **494 passed in 102.10s** (100% pass rate, zero failures, zero regressions across Stages 0–20).
+  - Dedicated Stage 20 security tests (`tests/test_stage20_security_hardening.py`): 20 passed in 0.75s.
+  - Packaging smoke & archive inspection tests (`tests/test_desktop_packaging_smoke.py`): 2 passed in 2.15s.
+  - Clean whitespace and git format: `git diff --check` passed with exit code 0.
+- **Manual Verification Completed & Verified**:
+  - Security headers and local HSTS behavior verified: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `CSP`, and `Referrer-Policy` emitted; `Strict-Transport-Security` omitted on local HTTP.
+  - Development localhost connector `/test` and `/collect` passed with HTTP 200/201.
+  - Cloud metadata SSRF (`http://169.254.169.254/...`) blocked on `/test` and `/collect` immediately before network transmission.
+  - Production RFC 1918 private targets (`192.168.1.50`, etc.) blocked when `APP_ENV=production`.
+  - Git traversal rejected with HTTP 400 Bad Request on repository endpoints.
+  - Oversized streamed/buffered requests rejected with HTTP 413 Payload Too Large.
+  - Stage 18 final canary (`3ec5213d-fecf-4cf5-9cf8-94148cbe7fd6`) survived the full test suite unchanged.
+  - Stage 19 durable report incident (`1d9d87a5-5ada-49dc-8920-78c294bdd4d8`) survived backend restart and regressions.
+- **Packaging Artifacts & Hygiene**:
+  - Backend Wheel (`dist/sentinelops-0.20.0-py3-none-any.whl`) and Source Distribution (`dist/sentinelops-0.20.0.tar.gz`) built cleanly.
+  - Release archives verified via automated inspection: strictly zero `tests/`, zero `android/`, zero `.env*`, zero `.db*`, zero `.jsonl` files present.
+  - Packaged Windows Control Center (`dist/SentinelOpsControlCenter/SentinelOpsControlCenter.exe`) built cleanly. Executed `--help` with exit code 0 and usage display. Verified zero database or secret files in distribution folder.
+- **Scope & Architectural Integrity**:
+  - Android mobile client (`android/`) remained completely untouched.
+  - SafeAction types preserved strictly to `TEST_CONNECTOR` and `RETRY_NOTIFICATION`.
+  - No database schema migrations or foreign keys added.
+  - All Stage 19 persistence and reporting behaviors preserved.
+  - Test isolation from `runtime/sentinelops.db` preserved.
+  - No commit or push performed.
+
+### User Approval
+User Approval: Approved

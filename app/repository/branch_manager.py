@@ -111,14 +111,20 @@ class GitBranchManager:
         """Creates an isolated Git branch rooted at base_commit and checks it out.
 
         Executes `git checkout -b <branch_name> <base_commit>` without force flags.
+        Enforces strict ref naming rules on branch_name and base_commit.
         """
+        from app.common.security import GitArgumentValidator
+
+        clean_branch = GitArgumentValidator.validate_branch_name(branch_name)
+        clean_base = GitArgumentValidator.validate_commit_hash(base_commit)
+
         self.validate_repository()
-        ret, _, stderr = self._run_git(["checkout", "-b", branch_name, base_commit])
+        ret, _, stderr = self._run_git(["checkout", "-b", clean_branch, clean_base])
         if ret != 0:
-            raise GitCommandError(f"git checkout -b {branch_name} {base_commit}", ret, stderr)
+            raise GitCommandError(f"git checkout -b {clean_branch} {clean_base}", ret, stderr)
         logger.info(
             "Created and checked out branch '%s' from base commit '%s' in '%s'",
-            branch_name,
-            base_commit,
+            clean_branch,
+            clean_base,
             self._repo_path,
         )

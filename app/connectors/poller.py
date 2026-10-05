@@ -120,8 +120,26 @@ class ConnectorPollerRuntime:
 
         start_time = time.perf_counter()
         try:
-            # Step 1: Execute probe
-            async with httpx.AsyncClient(timeout=connector.config.timeout_seconds) as client:
+            # Step 1: SSRF Validation
+            from app.common.security import SSRFGuard, SSRFValidationError
+            from app.connectors.redaction import scrub_string
+
+            try:
+                SSRFGuard.validate_url(url)
+            except SSRFValidationError as ssrf_exc:
+                latency_ms = (time.perf_counter() - start_time) * 1000.0
+                health.operational_status = OperationalStatus.ERRORED
+                health.consecutive_operational_errors += 1
+                health.last_operational_error = f"SSRF violation: {ssrf_exc}"
+                self._store.update_health(health)
+                return {
+                    "status": "operational_error",
+                    "error": str(ssrf_exc),
+                    "latency_ms": latency_ms,
+                }
+
+            # Step 2: Execute probe
+            async with httpx.AsyncClient(timeout=connector.config.timeout_seconds, follow_redirects=False) as client:
                 response = await client.request(
                     method=connector.config.method,
                     url=url,

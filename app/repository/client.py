@@ -164,13 +164,19 @@ class GitClient:
         max_chars: int = 50000,
     ) -> CommitDiff:
         """Returns the unified text diff for a commit or specific file, with bounded length."""
-        cmd = ["diff-tree", "--root", "-p", "-M", "--no-commit-id", commit_hash]
-        if path:
-            cmd.extend(["--", path])
+        from app.common.security import GitArgumentValidator
+        from app.repository.service import validate_git_path
+
+        clean_hash = GitArgumentValidator.validate_commit_hash(commit_hash)
+        clean_path = validate_git_path(path) if path is not None else None
+
+        cmd = ["diff-tree", "--root", "-p", "-M", "--no-commit-id", clean_hash]
+        if clean_path:
+            cmd.extend(["--", clean_path])
 
         ret, stdout, stderr = self._run_git(cmd)
         if ret != 0:
-            raise GitCommandError(f"git diff-tree -p {commit_hash}", ret, stderr)
+            raise GitCommandError(f"git diff-tree -p {clean_hash}", ret, stderr)
 
         raw_diff = stdout
         truncated = False
@@ -184,19 +190,21 @@ class GitClient:
             diff_text = raw_diff
 
         return CommitDiff(
-            commit_hash=commit_hash,
-            file_path=path,
+            commit_hash=clean_hash,
+            file_path=clean_path,
             diff=diff_text,
             truncated=truncated,
         )
 
     def get_file_history(self, path: str, limit: int = 10) -> List[GitCommit]:
         """Returns commits that touched a specific file path, newest first."""
-        ret, stdout, stderr = self._run_git(
-            ["log", f"--format={GIT_LOG_FORMAT}", f"-n{limit}", "--", path]
-        )
+        from app.repository.service import validate_git_path
+
+        clean_path = validate_git_path(path)
+        cmd = ["log", f"--format={GIT_LOG_FORMAT}", f"-n{limit}", "--", clean_path]
+        ret, stdout, stderr = self._run_git(cmd)
         if ret != 0:
-            raise GitCommandError(f"git log -n{limit} -- {path}", ret, stderr)
+            raise GitCommandError(f"git log -n{limit} -- {clean_path}", ret, stderr)
         return self._parse_log_output(stdout)
 
     # -----------------------------------------------------------------

@@ -69,15 +69,20 @@ class SourceScanner:
                 if not file_name.endswith(".py"):
                     continue
 
-                abs_file = (root_path / file_name).resolve()
+                candidate_file = root_path / file_name
 
-                # Boundary safety: skip symlinks pointing outside the repository root
-                if abs_file.is_symlink():
-                    try:
-                        resolved_target = abs_file.resolve()
-                        resolved_target.relative_to(repo_dir)
-                    except ValueError:
-                        continue
+                # Boundary safety: inspect candidate BEFORE resolution; skip symlinks/junctions escaping repo_dir
+                from app.common.security import PathJail
+                if not PathJail.is_safe_symlink_or_junction(repo_dir, candidate_file):
+                    continue
+
+                abs_file = candidate_file.resolve()
+
+                # Boundary safety: verify resolved target is strictly within repo_dir
+                try:
+                    abs_file.relative_to(repo_dir)
+                except ValueError:
+                    continue
 
                 # File size limit
                 if self._max_file_size is not None:
@@ -107,20 +112,18 @@ class SourceScanner:
 def os_walk_filtered(base_dir: Path, excluded_dirs: set[str]):
     """Generator walking directory tree while pruning excluded directories and external symlinks."""
     import os
+    from app.common.security import PathJail
 
     for root, dirs, files in os.walk(base_dir):
-        # Prune excluded directories and directory symlinks pointing outside base_dir
+        # Prune excluded directories and directory symlinks/junctions pointing outside base_dir
         pruned_dirs = []
         for d in dirs:
             if d.lower() in excluded_dirs:
                 continue
             dir_path = Path(root) / d
-            if dir_path.is_symlink():
-                try:
-                    resolved_dir = dir_path.resolve()
-                    resolved_dir.relative_to(base_dir)
-                except ValueError:
-                    continue
+            # Inspect candidate directory before walking into it
+            if not PathJail.is_safe_symlink_or_junction(base_dir, dir_path):
+                continue
             pruned_dirs.append(d)
 
         dirs[:] = pruned_dirs
