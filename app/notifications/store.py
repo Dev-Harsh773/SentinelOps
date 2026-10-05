@@ -361,6 +361,7 @@ class SqliteNotificationStore:
     def list_notifications(
         self,
         project_id: Optional[str] = None,
+        incident_id: Optional[str] = None,
         read_status: Optional[ReadStatus] = None,
         channel: Optional[NotificationChannel] = None,
         delivery_status: Optional[DeliveryStatus] = None,
@@ -377,6 +378,9 @@ class SqliteNotificationStore:
         if project_id:
             clauses.append("project_id = ?")
             params.append(project_id)
+        if incident_id:
+            clauses.append("incident_id = ?")
+            params.append(incident_id)
         if read_status:
             clauses.append("read_status = ?")
             params.append(read_status.value)

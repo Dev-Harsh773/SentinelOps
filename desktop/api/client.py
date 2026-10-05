@@ -335,3 +335,10 @@ class SentinelOpsClient:
     def get_action_audit(self, action_id: str) -> List[Dict[str, Any]]:
         """Fetch complete audit history for a safe action."""
         return self._request("GET", f"/actions/{action_id}/audit")
+
+    def get_incident_report(self, incident_id: str, project_id: str) -> "IncidentReportDTO":
+        """Fetch unified on-demand incident report and timeline."""
+        from desktop.api.models import IncidentReportDTO
+
+        data = self._request("GET", f"/incidents/{incident_id}/report", params={"project_id": project_id})
+        return IncidentReportDTO.from_dict(data)

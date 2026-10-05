@@ -46,6 +46,14 @@ async def lifespan(app: FastAPI):
             await watcher_service.stop()
         from app.watcher.dependencies import reset_watcher_state
         reset_watcher_state()
+        from app.remediation.dependencies import close_remediation_repositories
+        close_remediation_repositories()
+        from app.agents.dependencies import close_investigation_repository
+        close_investigation_repository()
+        from app.telemetry.dependencies import close_evidence_repository
+        close_evidence_repository()
+        from app.memory.dependencies import close_memory_repository
+        close_memory_repository()
         from app.actions.dependencies import close_action_store
         close_action_store()
         from app.notifications.dependencies import close_notification_store
@@ -57,6 +65,7 @@ async def lifespan(app: FastAPI):
         from app.incidents.dependencies import close_incident_repository
         close_incident_repository()
         logger.info("Shutting down %s", config.app_name)
+
 
 
 

@@ -12,6 +12,7 @@ except (ImportError, ModuleNotFoundError):
             return False
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -35,6 +36,7 @@ from desktop.api.client import SentinelOpsClient
 from desktop.api.models import (
     EvidenceDTO,
     IncidentDTO,
+    IncidentReportDTO,
     InvestigationDTO,
     RemediationBranchDTO,
     RemediationDTO,
@@ -43,6 +45,7 @@ from desktop.api.models import (
 )
 from desktop.state.app_state import AppState
 from desktop.state.signals import app_signals
+
 from desktop.ui.components.status_badge import StatusBadge
 from desktop.workers.task_runner import TaskRunner
 
@@ -196,22 +199,43 @@ class IncidentsView(QWidget):
         self.summary_text.setReadOnly(True)
         self.tabs.addTab(self.summary_text, "Summary")
 
-        # Tab 2: Evidence
+        # Tab 2: Unified Report
+        self.report_widget = QWidget(self.tabs)
+        r_layout = QVBoxLayout(self.report_widget)
+        r_layout.setContentsMargins(6, 6, 6, 6)
+        r_btn_row = QHBoxLayout()
+        self.btn_copy_markdown = QPushButton("Copy Markdown", self.report_widget)
+        self.btn_copy_markdown.setToolTip("Copy complete markdown report to clipboard")
+        self.btn_copy_markdown.clicked.connect(self._copy_report_markdown)
+        r_btn_row.addStretch()
+        r_btn_row.addWidget(self.btn_copy_markdown)
+        r_layout.addLayout(r_btn_row)
+        self.report_text = QTextEdit(self.report_widget)
+        self.report_text.setReadOnly(True)
+        r_layout.addWidget(self.report_text)
+        self.tabs.addTab(self.report_widget, "Report")
+
+        # Tab 3: Timeline
+        self.timeline_text = QTextEdit(self.tabs)
+        self.timeline_text.setReadOnly(True)
+        self.tabs.addTab(self.timeline_text, "Timeline")
+
+        # Tab 4: Evidence
         self.evidence_text = QTextEdit(self.tabs)
         self.evidence_text.setReadOnly(True)
         self.tabs.addTab(self.evidence_text, "Evidence")
 
-        # Tab 3: Investigation (Read-Only)
+        # Tab 5: Investigation (Read-Only)
         self.investigation_text = QTextEdit(self.tabs)
         self.investigation_text.setReadOnly(True)
         self.tabs.addTab(self.investigation_text, "AI Investigation")
 
-        # Tab 4: Remediation (Read-Only)
+        # Tab 6: Remediation (Read-Only)
         self.remediation_text = QTextEdit(self.tabs)
         self.remediation_text.setReadOnly(True)
         self.tabs.addTab(self.remediation_text, "Remediation")
 
-        # Tab 5: Safe Actions
+        # Tab 7: Safe Actions
         self.actions_scroll = QScrollArea(self.tabs)
         self.actions_scroll.setWidgetResizable(True)
         self.actions_widget = QWidget()
@@ -221,9 +245,15 @@ class IncidentsView(QWidget):
         self.actions_scroll.setWidget(self.actions_widget)
         self.tabs.addTab(self.actions_scroll, "Safe Actions")
 
+        # Tab 8: Operational Memory
+        self.memory_text = QTextEdit(self.tabs)
+        self.memory_text.setReadOnly(True)
+        self.tabs.addTab(self.memory_text, "Operational Memory")
+
         p_layout.addWidget(self.tabs)
         self._clear_incident_detail()
         return panel
+
 
     def _render_neutral_empty_safe_actions(self, message: str = "No incident selected.") -> None:
         """Render a clean, neutral empty-state message in the Safe Actions tab."""
@@ -262,12 +292,16 @@ class IncidentsView(QWidget):
 
         # Neutral empty text on inspection tabs
         self.summary_text.setHtml("<p style='color: #94A3B8; font-style: italic;'>No incident selected.</p>")
+        self.report_text.setHtml("<p style='color: #94A3B8; font-style: italic;'>No incident selected.</p>")
+        self.timeline_text.setPlainText("No incident selected.")
         self.evidence_text.setPlainText("No incident selected.")
         self.investigation_text.setPlainText("No incident selected.")
         self.remediation_text.setPlainText("No incident selected.")
+        self.memory_text.setPlainText("No incident selected.")
 
         # Safe Actions empty state
         self._render_neutral_empty_safe_actions("No incident selected.")
+
 
     def _set_detail_enabled(self, enabled: bool) -> None:
         self.tabs.setEnabled(enabled)
@@ -530,12 +564,17 @@ class IncidentsView(QWidget):
             f"<b>Updated:</b> {inc.updated_at}</p>"
         )
 
-        # Asynchronously fetch evidence, investigation, remediation, actions
+        # Asynchronously fetch evidence, investigation, remediation, actions, and unified report
         self._loading_incident_id = inc.id
         self.evidence_text.setPlainText("Loading evidence...")
         self.investigation_text.setPlainText("Loading investigation...")
         self.remediation_text.setPlainText("Loading remediation...")
+        self.report_text.setHtml("<p style='color: #94A3B8; font-style: italic;'>Loading unified report...</p>")
+        self.timeline_text.setPlainText("Loading timeline...")
+        self.memory_text.setPlainText("Loading operational memory...")
         self._render_safe_actions_loading()
+
+        active_proj = self.state.active_project_id or inc.project_id
 
         def fetch_artifacts():
             ev = self.client.list_incident_evidence(inc.id)
@@ -544,7 +583,12 @@ class IncidentsView(QWidget):
             rev = self.client.list_remediation_reviews(inc.id) if rem else []
             branch = self.client.get_remediation_branch(inc.id) if rem else None
             actions = self.client.list_actions(incident_id=inc.id)
-            return ev, inv, rem, rev, branch, actions
+            report = None
+            try:
+                report = self.client.get_incident_report(inc.id, project_id=active_proj)
+            except Exception:
+                pass
+            return ev, inv, rem, rev, branch, actions, report
 
         def on_success(artifacts):
             if (
@@ -555,11 +599,17 @@ class IncidentsView(QWidget):
                 or (self.state.active_project_id and self._selected_incident.project_id != self.state.active_project_id)
             ):
                 return  # Stale response discarded
-            ev, inv, rem, rev, branch, actions = artifacts
+            ev, inv, rem, rev, branch, actions, report = artifacts
             self._render_evidence(ev)
             self._render_investigation(inv)
             self._render_remediation(rem, rev, branch)
             self._render_safe_actions(actions)
+            if report and isinstance(report, IncidentReportDTO):
+                self._render_report(report)
+            else:
+                self.report_text.setHtml("<p style='color: #94A3B8; font-style: italic;'>Report unavailable.</p>")
+                self.timeline_text.setPlainText("Timeline unavailable.")
+                self.memory_text.setPlainText("Operational memory unavailable.")
 
         def on_error(exc):
             if (
@@ -573,7 +623,11 @@ class IncidentsView(QWidget):
             self.evidence_text.setPlainText(f"Failed to load evidence: {exc}")
             self.investigation_text.setPlainText(f"Failed to load investigation: {exc}")
             self.remediation_text.setPlainText(f"Failed to load remediation: {exc}")
+            self.report_text.setHtml(f"<p style='color: #EF4444;'>Failed to load report: {exc}</p>")
+            self.timeline_text.setPlainText(f"Failed to load timeline: {exc}")
+            self.memory_text.setPlainText(f"Failed to load operational memory: {exc}")
             self._render_safe_actions([])
+
 
         self.task_runner.run(fetch_artifacts, on_success=on_success, on_error=on_error)
 
@@ -929,3 +983,147 @@ class IncidentsView(QWidget):
                 self._refresh_safe_actions(inc_id)
 
         self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+
+    def _copy_report_markdown(self) -> None:
+        """Copies the current report in markdown format to the system clipboard."""
+        if not hasattr(self, "_current_report_markdown") or not self._current_report_markdown:
+            return
+        clipboard = QGuiApplication.clipboard()
+        if clipboard:
+            clipboard.setText(self._current_report_markdown)
+            app_signals.action_succeeded.emit("Report Copied", "Markdown report copied to clipboard.")
+
+    def _render_report(self, report: IncidentReportDTO) -> None:
+        """Renders rich HTML in the Report tab and formats raw markdown for clipboard copy."""
+        if not isinstance(report, IncidentReportDTO):
+            return
+        inc = report.incident
+        det = report.detection_and_evidence
+        inv = report.investigation
+        rem = report.remediation
+
+        md_lines = []
+        md_lines.append(f"# Incident Report: {inc.get('title', 'Untitled')}")
+        md_lines.append(f"**Incident ID:** {inc.get('incident_id', '')} | **Project:** {inc.get('project_id', '')}")
+        md_lines.append(f"**Severity:** {inc.get('severity', '').upper()} | **Status:** {inc.get('status', '').upper()}")
+        md_lines.append(f"**Service:** {inc.get('service', '')} | **Environment:** {inc.get('environment', '')}")
+        md_lines.append(f"**Created:** {inc.get('created_at', '')} | **Duration:** {inc.get('duration_seconds') or 'In progress'}")
+        md_lines.append("\n## Summary")
+        md_lines.append(inc.get("summary", "No summary provided."))
+
+        md_lines.append(f"\n## Detection & Evidence")
+        md_lines.append(f"- **Total Evidence Captured:** {det.get('total_evidence_count', 0)}")
+        if det.get("first_evidence_at"):
+            md_lines.append(f"- **First Evidence:** {det.get('first_evidence_at')}")
+        if det.get("last_evidence_at"):
+            md_lines.append(f"- **Last Evidence:** {det.get('last_evidence_at')}")
+
+        if inv:
+            md_lines.append("\n## Root Cause Analysis (AI Investigation)")
+            md_lines.append(f"- **Hypothesis:** {inv.get('root_cause_hypothesis', 'None')}")
+            md_lines.append(f"- **Failure Location:** {inv.get('failure_location', 'None')}")
+            md_lines.append(f"- **Triggering Condition:** {inv.get('triggering_condition', 'None')}")
+            md_lines.append(f"- **Confidence:** {inv.get('confidence', 0.0)}")
+
+        if rem:
+            md_lines.append("\n## Remediation Recommendation")
+            md_lines.append(f"- **Summary:** {rem.get('summary', 'None')}")
+            md_lines.append(f"- **Rationale:** {rem.get('rationale', 'None')}")
+            if rem.get("branch_name"):
+                md_lines.append(f"- **Branch:** `{rem.get('branch_name')}`")
+
+        if report.safe_actions:
+            md_lines.append(f"\n## Safe Actions ({len(report.safe_actions)})")
+            for sa in report.safe_actions:
+                md_lines.append(f"- **{sa.get('action_type', '').upper()}** on `{sa.get('target_type')}:{sa.get('target_id')}` | Approval: {sa.get('approval_status')} | Execution: {sa.get('execution_status')}")
+
+        if report.similar_incidents:
+            md_lines.append(f"\n## Similar Historical Incidents ({len(report.similar_incidents)})")
+            for sim in report.similar_incidents:
+                md_lines.append(f"- **{sim.title}** (Score: {sim.similarity_score:.1f}) | Signals: {', '.join(sim.matched_signals)}")
+                md_lines.append(f"  *Cause:* {sim.root_cause_hypothesis}")
+
+        self._current_report_markdown = "\n".join(md_lines)
+
+        # Build clean HTML for Report widget
+        html = f"""
+        <div style="font-family: sans-serif; color: #F8FAFC; line-height: 1.5;">
+            <h2 style="color: #60A5FA; margin-bottom: 4px;">{inc.get('title')}</h2>
+            <p style="color: #94A3B8; font-size: 12px; margin-top: 0;">
+                ID: {inc.get('incident_id')} | Project: {inc.get('project_id')} | Service: {inc.get('service')} | Env: {inc.get('environment')}
+            </p>
+            <p><b>Severity:</b> <span style="color: #F59E0B;">{str(inc.get('severity')).upper()}</span> |
+               <b>Status:</b> <span style="color: #10B981;">{str(inc.get('status')).upper()}</span> |
+               <b>Duration:</b> {f"{inc.get('duration_seconds'):.1f}s" if inc.get('duration_seconds') is not None else "Active"}
+            </p>
+            <div style="background: #1E293B; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 6px 0; color: #E2E8F0;">Summary</h4>
+                <p style="margin: 0; color: #CBD5E1;">{inc.get('summary')}</p>
+            </div>
+        """
+
+        if inv:
+            html += f"""
+            <div style="background: #1E293B; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 6px 0; color: #A78BFA;">Root Cause Analysis</h4>
+                <p style="margin: 2px 0;"><b>Hypothesis:</b> {inv.get('root_cause_hypothesis') or 'None'}</p>
+                <p style="margin: 2px 0;"><b>Failure Location:</b> <code>{inv.get('failure_location') or 'None'}</code></p>
+                <p style="margin: 2px 0;"><b>Triggering Condition:</b> {inv.get('triggering_condition') or 'None'}</p>
+                <p style="margin: 2px 0;"><b>Confidence:</b> {inv.get('confidence') or 0.0}</p>
+            </div>
+            """
+
+        if rem:
+            html += f"""
+            <div style="background: #1E293B; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 6px 0; color: #34D399;">Remediation Recommendation</h4>
+                <p style="margin: 2px 0;"><b>Summary:</b> {rem.get('summary') or 'None'}</p>
+                <p style="margin: 2px 0;"><b>Rationale:</b> {rem.get('rationale') or 'None'}</p>
+                {f"<p style='margin: 2px 0;'><b>Branch:</b> <code>{rem.get('branch_name')}</code></p>" if rem.get('branch_name') else ""}
+            </div>
+            """
+
+        if report.safe_actions:
+            html += """
+            <div style="background: #1E293B; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+                <h4 style="margin: 0 0 6px 0; color: #FBBF24;">Safe Actions</h4>
+            """
+            for sa in report.safe_actions:
+                html += f"""
+                <p style="margin: 4px 0; font-size: 12px;">
+                    <b>{sa.get('action_type', '').upper()}</b> on <code>{sa.get('target_type')}:{sa.get('target_id')}</code> &mdash;
+                    Approval: <b>{sa.get('approval_status')}</b> | Execution: <b>{sa.get('execution_status')}</b>
+                </p>
+                """
+            html += "</div>"
+
+        html += "</div>"
+        self.report_text.setHtml(html)
+
+        # Render Timeline tab
+        t_lines = []
+        if not report.timeline:
+            self.timeline_text.setPlainText("No recorded events on timeline.")
+        else:
+            for ev in report.timeline:
+                ts_str = ev.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC") if ev.timestamp else "N/A"
+                actor_str = f" [{ev.actor}]" if ev.actor else ""
+                t_lines.append(f"[{ts_str}] {ev.title}{actor_str}")
+                t_lines.append(f"  {ev.description}")
+                t_lines.append("")
+            self.timeline_text.setPlainText("\n".join(t_lines))
+
+        # Render Operational Memory tab
+        if not report.similar_incidents:
+            self.memory_text.setPlainText("No similar historical incidents identified in operational memory.")
+        else:
+            m_lines = []
+            for sim in report.similar_incidents:
+                m_lines.append(f"=== {sim.title} (Match Score: {sim.similarity_score:.1f}) ===")
+                m_lines.append(f"Incident ID: {sim.incident_id} | Service: {sim.service} | Status: {sim.status or 'N/A'}")
+                m_lines.append(f"Matched Signals: {', '.join(sim.matched_signals)}")
+                m_lines.append(f"Root Cause: {sim.root_cause_hypothesis}")
+                if sim.resolution_notes:
+                    m_lines.append(f"Resolution / Mitigation Notes: {sim.resolution_notes}")
+                m_lines.append("-" * 50)
+            self.memory_text.setPlainText("\n".join(m_lines))

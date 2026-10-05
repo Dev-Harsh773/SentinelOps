@@ -7,9 +7,14 @@ from app.agents.llm import (
     InvestigationLLM,
     LangChainInvestigationLLM,
 )
+import threading
+from typing import Optional
+
+from app.agents.models import InvestigationLLMError
 from app.agents.repository import (
     InMemoryInvestigationRepository,
     InvestigationRepository,
+    SqliteInvestigationRepository,
 )
 from app.agents.service import InvestigationService
 from app.common.config import config
@@ -26,18 +31,40 @@ from app.retrieval.service import RetrievalService
 from app.telemetry.dependencies import get_evidence_repository
 from app.telemetry.repository import EvidenceRepository
 
-from app.agents.models import InvestigationLLMError
-
-# Shared singleton in-memory repository for investigation results
-_shared_investigation_repository = InMemoryInvestigationRepository()
-
-# Shared singleton for mock LLM instance when mock provider is active
+_lock = threading.RLock()
+_investigation_repository: Optional[InvestigationRepository] = None
+_custom_investigation_db_path: Optional[str] = None
 _shared_fake_llm = FakeInvestigationLLM()
 
 
-def get_investigation_repository() -> InvestigationRepository:
+def set_custom_investigation_db_path(db_path: Optional[str]) -> None:
+    """Explicitly redirect investigation store to custom DB path (used by test suites)."""
+    global _custom_investigation_db_path, _investigation_repository
+    with _lock:
+        _custom_investigation_db_path = db_path
+        if _investigation_repository is not None and isinstance(_investigation_repository, SqliteInvestigationRepository):
+            _investigation_repository.close()
+        _investigation_repository = None
+
+
+def get_investigation_repository(db_path: Optional[str] = None) -> InvestigationRepository:
     """Provides the shared InvestigationRepository instance."""
-    return _shared_investigation_repository
+    global _investigation_repository
+    with _lock:
+        if _investigation_repository is None:
+            resolved_db = db_path or _custom_investigation_db_path or "runtime/sentinelops.db"
+            _investigation_repository = SqliteInvestigationRepository(db_path=resolved_db)
+        return _investigation_repository
+
+
+def close_investigation_repository() -> None:
+    """Closes the investigation repository singleton."""
+    global _investigation_repository
+    with _lock:
+        if _investigation_repository is not None and isinstance(_investigation_repository, SqliteInvestigationRepository):
+            _investigation_repository.close()
+        _investigation_repository = None
+
 
 
 def get_investigation_llm() -> InvestigationLLM:

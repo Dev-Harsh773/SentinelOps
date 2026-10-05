@@ -1682,3 +1682,106 @@ Establish a first-class `SafeAction` entity separate from textual remediation pr
 
 ### User Approval
 Approved
+
+---
+
+## Stage 19 — Reports + Operational Memory UX
+
+### Overview
+Stage 19 introduces a unified read-only incident report read model, an auditable chronological timeline, and operational memory UX without introducing synthetic timeline events or a mutable `incident_reports` table. To satisfy the requirement that factual report data survives backend restart without mutability risks, all canonical source artifacts (`Evidence`, `Investigation`, `RemediationProposal`, `RemediationReview`, `RemediationBranch`, `IncidentMemory`) were transitioned from in-memory storage to durable SQLite tables in `runtime/sentinelops.db`. Each SQLite repository implements a hard runtime guard preventing destructive clearing of the production database. Control Center was extended with Report, Timeline, and Operational Memory tabs, local markdown export, and stale-response protection.
+
+### Scope & Architecture Decisions
+- **Durable Canonical Source Repositories**:
+  - Replaced legacy in-memory stores with durable SQLite repositories: `SqliteEvidenceRepository`, `SqliteInvestigationRepository`, `SqliteRemediationRepository`, `SqliteRemediationReviewRepository`, `SqliteRemediationBranchRepository`, and `SqliteIncidentMemoryRepository`.
+  - Stored artifacts in dedicated relational tables within `runtime/sentinelops.db` with WAL mode and busy timeouts.
+  - Omitted relational child foreign keys at table creation time to preserve 100% semantic parity with existing isolated unit test contracts while maintaining indexes and service-level integrity checks.
+- **Hard Production Database Clear Guards**:
+  - Every SQLite repository exposing a `.clear()` method implements a hard runtime guard: resolving the database path against `Path("runtime/sentinelops.db").resolve()` raises `RuntimeError("Refusing to clear production ... database at ...")` without deleting rows.
+  - Global `tests/conftest.py` isolates all test runs to temporary SQLite databases by default, preventing test fixtures from ever clearing or mutating production state.
+- **On-Demand Report Read Model**:
+  - Reports are constructed strictly on-demand via `GET /incidents/{incident_id}/report?project_id={project_id}` by `ReportService`, aggregating facts from canonical stores dynamically.
+  - Zero mutable report tables or cached report entities exist in the database.
+- **Zero Existence Leakage & Project Boundary Enforcement**:
+  - `project_id` query parameter is strictly mandatory (HTTP 422 Unprocessable Entity if omitted).
+  - Cross-project incident queries return HTTP 404 Not Found identically to non-existent incidents, preventing cross-tenant existence enumeration.
+- **Truthful Deterministic Timeline (Zero Synthetic Events)**:
+  - Constructed strictly from recorded facts: incident creation, evidence captures, investigation completion, remediation approval, human reviews, safe action audit records, and notification delivery attempts.
+  - Zero fabricated intermediate state transitions.
+  - Uses exact Stage 18 audit event string literals (`PROPOSED`, `POLICY_EVALUATED`, `POLICY_DENIED`, `APPROVED`, `REJECTED`, `EXECUTION_STARTED`, `POLICY_REVALIDATION_FAILED`, `EXECUTION_COMPLETED`, `EXECUTION_FAILED`, `PREREQUISITE_CONFLICT_ABORTED`, `EXECUTION_ABORTED_ON_RESTART`).
+  - Notification failure timeline entries omit unobserved delivery timestamps if `last_attempt_at` is None.
+  - Deterministic sort order: Primary `timestamp ASC`, secondary `source_event_type ASC`, tertiary stable entity/audit UUID.
+- **Operational Memory Retrieval**:
+  - Aggregates historical incident memories deterministically via Stage 7 lexical and categorical matcher, excluding the current incident from its own historical context.
+- **Windows Control Center Desktop UX**:
+  - Added dedicated Report, Timeline, and Operational Memory tabs to `IncidentsView`.
+  - Added local clipboard export button (`Copy Markdown`) generating human-readable structured Markdown without extra backend endpoints.
+  - Guarded asynchronous loading with generation tokens (`_current_generation`), safely discarding stale responses when users switch incidents or projects rapidly.
+- **Scope Freezes**:
+  - Zero modifications to the Android mobile client codebase (`android/` untouched).
+  - Zero autonomous safe action execution.
+
+### Files Added / Changed
+- `app/telemetry/repository.py`: Added `SqliteEvidenceRepository` with WAL mode, JSON metadata serialization, and hard clear guard.
+- `app/telemetry/dependencies.py`: Wired `get_evidence_repository`, `set_custom_evidence_db_path`, `close_evidence_repository`.
+- `app/agents/repository.py`: Added `SqliteInvestigationRepository` with WAL mode, JSON RCA/validation serialization, and hard clear guard.
+- `app/agents/dependencies.py`: Wired `get_investigation_repository`, `set_custom_investigation_db_path`, `close_investigation_repository`.
+- `app/remediation/repository.py`: Added `SqliteRemediationRepository` with WAL mode, JSON changes serialization, and hard clear guard.
+- `app/remediation/review_repository.py`: Added `SqliteRemediationReviewRepository` with WAL mode and hard clear guard.
+- `app/remediation/branch_repository.py`: Added `SqliteRemediationBranchRepository` with WAL mode and hard clear guard.
+- `app/remediation/dependencies.py`: Wired remediation SQLite repositories, `set_custom_remediation_db_path`, `close_remediation_repositories`.
+- `app/memory/repository.py`: Added `SqliteIncidentMemoryRepository` with WAL mode, JSON list serialization, and hard clear guard.
+- `app/memory/dependencies.py`: Wired `SqliteIncidentMemoryRepository`, `set_custom_memory_db_path`, `close_memory_repository`, cache invalidation.
+- `app/notifications/store.py`: Added optional `incident_id` filter to `list_notifications`.
+- `app/main.py`: Registered close methods for all SQLite repositories in lifespan shutdown.
+- `app/reports/models.py`: Domain dataclasses and `TimelineEventType` enum.
+- `app/reports/schemas.py`: Pydantic response schemas (`IncidentReportResponse`, sections, items).
+- `app/reports/timeline.py`: `ReportTimelineBuilder` with deterministic tie-breaking, exact audit literals, and truthful timestamps.
+- `app/reports/service.py`: `ReportService` aggregating canonical stores on-demand with project boundary enforcement.
+- `app/reports/dependencies.py`: Dynamic `get_report_service` provider.
+- `app/reports/routes.py`: Endpoint `GET /incidents/{incident_id}/report` requiring `project_id`.
+- `app/reports/__init__.py`: Router export.
+- `app/api/__init__.py`: Registered `reports_router`.
+- `desktop/api/models.py`: Added `IncidentReportDTO`, `TimelineEventDTO`, and `SimilarIncidentReportDTO`.
+- `desktop/api/client.py`: Added `get_incident_report(incident_id, project_id)`.
+- `desktop/ui/views/incidents_view.py`: Added Report, Timeline, and Operational Memory tabs, local Markdown copy, and generation-based stale response protection.
+- `tests/conftest.py`: Global pytest autouse test isolation fixture redirecting all repositories to temporary databases.
+- `tests/test_reports_timeline.py`: Unit tests for timeline sorting, tie-breaking, exact audit events, and zero synthetic status transitions.
+- `tests/test_reports_service.py`: Service tests for sparse incidents, complete pipelines, and project boundary enforcement.
+- `tests/test_reports_api.py`: FastAPI endpoint tests (200, 422 missing project, 404 cross-project, 404 nonexistent).
+- `tests/test_reports_persistence.py`: Comprehensive tests for hard clear guards, CRUD parity, restart lifecycle, and identical factual report survival across restart.
+- `tests/desktop/test_desktop_reports.py`: Desktop DTO, client, and UI tests for report rendering, markdown copy, and generation token discard.
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 19 entry.
+
+### Verification
+- **Automated Test Suite**:
+  - Full regression suite: **472 passed in 86.61s** (100% pass rate, zero failures, zero regressions).
+  - Dedicated Stage 19 report tests (`python -m pytest tests/test_reports_*.py tests/desktop/test_desktop_reports.py -q`): 21 passed in 2.27s.
+- **Canary & Persistence Verification**:
+  - Stage 18 final canary `3ec5213d-fecf-4cf5-9cf8-94148cbe7fd6` survived the full test suite unchanged.
+  - Stage 19 durable report incident `1d9d87a5-5ada-49dc-8920-78c294bdd4d8` survived backend restart and final regression.
+  - Evidence persistence and fingerprint dedup verified.
+  - Investigation/RCA persistence across backend restart verified.
+  - Remediation persistence across restart verified, including truthful `failed_validation` state.
+  - Incident Memory persistence across restart verified.
+  - Remediation review persistence is covered by the Stage 19 automated persistence tests.
+  - Hard production database clear guards verified on all 6 repositories: attempting to clear `runtime/sentinelops.db` raises `RuntimeError` and mutates zero rows.
+- **Project Boundary & Timeline Integrity**:
+  - Project isolation verified: correct project succeeds, wrong project returns 404, missing `project_id` returns 422.
+  - Notifications and deterministic timeline verified with exact Stage 18 audit event literals and truthful delivery timestamps.
+- **Windows Control Center UX Verification**:
+  - Report tab verified.
+  - Timeline tab verified.
+  - Operational Memory verified for both empty and populated similar-incident states.
+  - Copy Markdown verified.
+  - Cross-project stale-state protection verified.
+  - Backend disconnect/reconnect behavior verified.
+- **Scope & Integrity Adherence**:
+  - Android mobile client (`android/`) remained completely untouched.
+  - No Stage 20 work was started.
+  - No commits or pushes performed.
+
+### Follow-up Notes (Non-Blocking)
+- **Investigation Source-Retrieval Ranking Quality**: During manual verification, it was observed that source-retrieval ranking can occasionally rank unrelated indexed source chunks above traceback-relevant files, leading to an invalid RCA. Indexing itself was verified healthy and the RCA validator correctly rejected the unsupported conclusion. This is tracked as a future investigation/retrieval-quality improvement and does not block Stage 19 report generation.
+
+### User Approval
+Approved

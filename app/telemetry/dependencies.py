@@ -6,16 +6,45 @@ from app.common.config import config
 from app.incidents.dependencies import get_incident_service
 from app.incidents.service import IncidentService
 from app.telemetry.collector import RuntimeLogCollector
-from app.telemetry.repository import EvidenceRepository, InMemoryEvidenceRepository
+import threading
+from typing import Optional
+
+from app.telemetry.repository import EvidenceRepository, InMemoryEvidenceRepository, SqliteEvidenceRepository
 from app.telemetry.service import TelemetryService
 
-# Shared in-memory evidence repository instance across runtime requests
-_shared_evidence_repository = InMemoryEvidenceRepository()
+_lock = threading.RLock()
+_evidence_repository: Optional[EvidenceRepository] = None
+_custom_evidence_db_path: Optional[str] = None
 
 
-def get_evidence_repository() -> EvidenceRepository:
+def set_custom_evidence_db_path(db_path: Optional[str]) -> None:
+    """Explicitly redirect evidence store to custom DB path (used by test suites)."""
+    global _custom_evidence_db_path, _evidence_repository
+    with _lock:
+        _custom_evidence_db_path = db_path
+        if _evidence_repository is not None and isinstance(_evidence_repository, SqliteEvidenceRepository):
+            _evidence_repository.close()
+        _evidence_repository = None
+
+
+def get_evidence_repository(db_path: Optional[str] = None) -> EvidenceRepository:
     """Provide the shared evidence repository instance."""
-    return _shared_evidence_repository
+    global _evidence_repository
+    with _lock:
+        if _evidence_repository is None:
+            resolved_db = db_path or _custom_evidence_db_path or "runtime/sentinelops.db"
+            _evidence_repository = SqliteEvidenceRepository(db_path=resolved_db)
+        return _evidence_repository
+
+
+def close_evidence_repository() -> None:
+    """Closes the evidence repository singleton."""
+    global _evidence_repository
+    with _lock:
+        if _evidence_repository is not None and isinstance(_evidence_repository, SqliteEvidenceRepository):
+            _evidence_repository.close()
+        _evidence_repository = None
+
 
 
 def get_log_collector() -> RuntimeLogCollector:

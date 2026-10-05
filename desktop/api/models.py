@@ -576,3 +576,92 @@ class ActionAuditDTO:
             payload=data.get("payload"),
             created_at=_parse_datetime(data.get("created_at")),
         )
+
+
+@dataclass
+class TimelineEventDTO:
+    timestamp: Optional[datetime]
+    event_type: str
+    title: str
+    description: str
+    source: str
+    actor: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TimelineEventDTO":
+        return cls(
+            timestamp=_parse_datetime(data.get("timestamp")),
+            event_type=str(data.get("event_type", "")),
+            title=str(data.get("title", "")),
+            description=str(data.get("description", "")),
+            source=str(data.get("source", "")),
+            actor=data.get("actor"),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass
+class SimilarIncidentReportDTO:
+    incident_id: str
+    project_id: str
+    title: str
+    service: str
+    severity: Optional[str]
+    status: Optional[str]
+    created_at: Optional[datetime]
+    similarity_score: float
+    matched_signals: List[str]
+    failure_location: str
+    triggering_condition: str
+    root_cause_hypothesis: str
+    resolution_notes: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SimilarIncidentReportDTO":
+        return cls(
+            incident_id=str(data.get("incident_id", "")),
+            project_id=str(data.get("project_id", "")),
+            title=str(data.get("title", "")),
+            service=str(data.get("service", "")),
+            severity=data.get("severity"),
+            status=data.get("status"),
+            created_at=_parse_datetime(data.get("created_at")),
+            similarity_score=float(data.get("similarity_score", 0.0)),
+            matched_signals=list(data.get("matched_signals", [])),
+            failure_location=str(data.get("failure_location", "")),
+            triggering_condition=str(data.get("triggering_condition", "")),
+            root_cause_hypothesis=str(data.get("root_cause_hypothesis", "")),
+            resolution_notes=data.get("resolution_notes"),
+        )
+
+
+@dataclass
+class IncidentReportDTO:
+    incident: Dict[str, Any]
+    detection_and_evidence: Dict[str, Any]
+    investigation: Optional[Dict[str, Any]]
+    remediation: Optional[Dict[str, Any]]
+    human_decisions: List[Dict[str, Any]]
+    safe_actions: List[Dict[str, Any]]
+    notifications: List[Dict[str, Any]]
+    similar_incidents: List[SimilarIncidentReportDTO]
+    timeline: List[TimelineEventDTO]
+    generated_at: Optional[datetime]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IncidentReportDTO":
+        sims = [SimilarIncidentReportDTO.from_dict(d) for d in data.get("similar_incidents", [])]
+        events = [TimelineEventDTO.from_dict(d) for d in data.get("timeline", [])]
+        return cls(
+            incident=dict(data.get("incident", {})),
+            detection_and_evidence=dict(data.get("detection_and_evidence", {})),
+            investigation=data.get("investigation"),
+            remediation=data.get("remediation"),
+            human_decisions=list(data.get("human_decisions", [])),
+            safe_actions=list(data.get("safe_actions", [])),
+            notifications=list(data.get("notifications", [])),
+            similar_incidents=sims,
+            timeline=events,
+            generated_at=_parse_datetime(data.get("generated_at")),
+        )

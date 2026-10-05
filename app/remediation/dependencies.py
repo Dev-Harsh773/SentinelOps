@@ -1,5 +1,5 @@
-"""FastAPI dependency injection providers for SentinelOps remediation."""
-
+import threading
+from typing import Optional
 from fastapi import Depends
 
 from app.agents.dependencies import get_investigation_service
@@ -10,6 +10,7 @@ from app.incidents.service import IncidentService
 from app.remediation.branch_repository import (
     InMemoryRemediationBranchRepository,
     RemediationBranchRepository,
+    SqliteRemediationBranchRepository,
 )
 from app.remediation.llm import (
     FakeRemediationLLM,
@@ -19,10 +20,12 @@ from app.remediation.llm import (
 from app.remediation.repository import (
     InMemoryRemediationRepository,
     RemediationRepository,
+    SqliteRemediationRepository,
 )
 from app.remediation.review_repository import (
     InMemoryRemediationReviewRepository,
     RemediationReviewRepository,
+    SqliteRemediationReviewRepository,
 )
 from app.remediation.review_service import RemediationReviewService
 from app.remediation.service import RemediationService
@@ -31,9 +34,12 @@ from app.repository.branch_manager import GitBranchManager
 from app.telemetry.dependencies import get_evidence_repository
 from app.telemetry.repository import EvidenceRepository
 
-_shared_repository = InMemoryRemediationRepository()
-_shared_review_repository = InMemoryRemediationReviewRepository()
-_shared_branch_repository = InMemoryRemediationBranchRepository()
+_lock = threading.RLock()
+_remediation_repository: Optional[RemediationRepository] = None
+_review_repository: Optional[RemediationReviewRepository] = None
+_branch_repository: Optional[RemediationBranchRepository] = None
+_custom_remediation_db_path: Optional[str] = None
+
 _shared_branch_manager = GitBranchManager(
     repository_path=config.git_branch_repository_path,
     base_branch=config.git_base_branch,
@@ -42,19 +48,66 @@ _shared_fake_llm = FakeRemediationLLM()
 _shared_validator = RemediationValidator()
 
 
-def get_remediation_repository() -> RemediationRepository:
-    """Provides the shared in-memory remediation repository."""
-    return _shared_repository
+def set_custom_remediation_db_path(db_path: Optional[str]) -> None:
+    """Explicitly redirect remediation stores to custom DB path (used by test suites)."""
+    global _custom_remediation_db_path, _remediation_repository, _review_repository, _branch_repository
+    with _lock:
+        _custom_remediation_db_path = db_path
+        if _remediation_repository is not None and isinstance(_remediation_repository, SqliteRemediationRepository):
+            _remediation_repository.close()
+        _remediation_repository = None
+        if _review_repository is not None and isinstance(_review_repository, SqliteRemediationReviewRepository):
+            _review_repository.close()
+        _review_repository = None
+        if _branch_repository is not None and isinstance(_branch_repository, SqliteRemediationBranchRepository):
+            _branch_repository.close()
+        _branch_repository = None
 
 
-def get_review_repository() -> RemediationReviewRepository:
-    """Provides the shared in-memory remediation review repository."""
-    return _shared_review_repository
+def get_remediation_repository(db_path: Optional[str] = None) -> RemediationRepository:
+    """Provides the shared remediation repository."""
+    global _remediation_repository
+    with _lock:
+        if _remediation_repository is None:
+            resolved_db = db_path or _custom_remediation_db_path or "runtime/sentinelops.db"
+            _remediation_repository = SqliteRemediationRepository(db_path=resolved_db)
+        return _remediation_repository
 
 
-def get_branch_repository() -> RemediationBranchRepository:
-    """Provides the shared in-memory remediation branch repository."""
-    return _shared_branch_repository
+def get_review_repository(db_path: Optional[str] = None) -> RemediationReviewRepository:
+    """Provides the shared remediation review repository."""
+    global _review_repository
+    with _lock:
+        if _review_repository is None:
+            resolved_db = db_path or _custom_remediation_db_path or "runtime/sentinelops.db"
+            _review_repository = SqliteRemediationReviewRepository(db_path=resolved_db)
+        return _review_repository
+
+
+def get_branch_repository(db_path: Optional[str] = None) -> RemediationBranchRepository:
+    """Provides the shared remediation branch repository."""
+    global _branch_repository
+    with _lock:
+        if _branch_repository is None:
+            resolved_db = db_path or _custom_remediation_db_path or "runtime/sentinelops.db"
+            _branch_repository = SqliteRemediationBranchRepository(db_path=resolved_db)
+        return _branch_repository
+
+
+def close_remediation_repositories() -> None:
+    """Closes all remediation repository singletons."""
+    global _remediation_repository, _review_repository, _branch_repository
+    with _lock:
+        if _remediation_repository is not None and isinstance(_remediation_repository, SqliteRemediationRepository):
+            _remediation_repository.close()
+        _remediation_repository = None
+        if _review_repository is not None and isinstance(_review_repository, SqliteRemediationReviewRepository):
+            _review_repository.close()
+        _review_repository = None
+        if _branch_repository is not None and isinstance(_branch_repository, SqliteRemediationBranchRepository):
+            _branch_repository.close()
+        _branch_repository = None
+
 
 
 def get_git_branch_manager() -> GitBranchManager:
@@ -118,18 +171,21 @@ def get_review_service(
 
 
 def reset_remediation_repository() -> None:
-    """Clears in-memory remediation storage (used for isolated tests)."""
-    if isinstance(_shared_repository, InMemoryRemediationRepository):
-        _shared_repository.clear()
+    """Clears remediation storage (used for isolated tests)."""
+    repo = get_remediation_repository()
+    if repo:
+        repo.clear()
 
 
 def reset_review_repository() -> None:
-    """Clears in-memory review storage (used for isolated tests)."""
-    if isinstance(_shared_review_repository, InMemoryRemediationReviewRepository):
-        _shared_review_repository.clear()
+    """Clears review storage (used for isolated tests)."""
+    repo = get_review_repository()
+    if repo:
+        repo.clear()
 
 
 def reset_branch_repository() -> None:
-    """Clears in-memory branch storage (used for isolated tests)."""
-    if isinstance(_shared_branch_repository, InMemoryRemediationBranchRepository):
-        _shared_branch_repository.clear()
+    """Clears branch storage (used for isolated tests)."""
+    repo = get_branch_repository()
+    if repo:
+        repo.clear()
