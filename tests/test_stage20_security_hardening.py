@@ -126,7 +126,7 @@ def test_git_checkout_command_construction(monkeypatch):
 
     monkeypatch.setattr(GitBranchManager, "_run_git", mock_run_git)
     manager = GitBranchManager(repository_path=".")
-    
+
     sha = "1234567890abcdef1234567890abcdef12345678"
     manager.create_and_checkout_branch("remediation/fix-123", sha)
 
