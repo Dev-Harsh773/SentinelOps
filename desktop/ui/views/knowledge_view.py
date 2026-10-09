@@ -1,5 +1,6 @@
 """Project workspace and knowledge base status view."""
 
+from datetime import datetime, timezone
 from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (

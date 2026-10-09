@@ -44,7 +44,7 @@ sentinelops = "app.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*", "desktop*"]
-exclude = ["tests*", "android*", "runtime*", "demo_app*"]
+exclude = ["tests*", "android*", "runtime*", "demo_app*", "workspaces*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.json", "*.md"]

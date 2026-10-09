@@ -60,6 +60,9 @@ class AppConfig:
     max_request_body_size: int = 10_485_760
     force_https: bool = False
     trusted_proxies: str = "127.0.0.1,::1"
+    telemetry_recency_window_seconds: int = 900
+    public_ingress_url: Optional[str] = None
+    sentinel_workspaces_root: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -112,6 +115,9 @@ class AppConfig:
             max_request_body_size=int(os.getenv("MAX_REQUEST_BODY_SIZE", "10485760")),
             force_https=os.getenv("FORCE_HTTPS", "false").lower() in ("true", "1", "yes"),
             trusted_proxies=os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1"),
+            telemetry_recency_window_seconds=int(os.getenv("TELEMETRY_RECENCY_WINDOW_SECONDS", "900")),
+            public_ingress_url=os.getenv("PUBLIC_INGRESS_URL") or None,
+            sentinel_workspaces_root=os.getenv("SENTINEL_WORKSPACES_ROOT") or None,
         )
 
 

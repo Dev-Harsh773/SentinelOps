@@ -63,7 +63,11 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.offline_banner)
 
         # 2. Header Bar
-        self.header = HeaderBar(on_refresh=self._on_global_refresh, parent=central)
+        self.header = HeaderBar(
+            on_refresh=self._on_global_refresh,
+            on_onboard=self._on_open_onboarding_wizard,
+            parent=central,
+        )
         root_layout.addWidget(self.header)
 
         # 3. Main Workspace: Sidebar + Stacked Views
@@ -112,6 +116,13 @@ class MainWindow(QMainWindow):
         active = self.stack.currentWidget()
         if hasattr(active, "refresh") and callable(active.refresh):
             active.refresh()
+
+    def _on_open_onboarding_wizard(self) -> None:
+        """Launch the end-to-end application onboarding wizard."""
+        from desktop.ui.onboarding_wizard import OnboardingWizardDialog
+        wizard = OnboardingWizardDialog(client=self.client, task_runner=self.task_runner, parent=self)
+        if wizard.exec():
+            self._on_global_refresh()
 
     def _on_navigation(self, index: int) -> None:
         self.stack.setCurrentIndex(index)

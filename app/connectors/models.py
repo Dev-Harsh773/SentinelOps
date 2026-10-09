@@ -107,6 +107,7 @@ class ConnectorCreateRequest(BaseModel):
     connector_type: ConnectorType
     config: ConnectorConfig
     status: ConnectorStatus = ConnectorStatus.ACTIVE
+    generate_secret: bool = False
 
     @field_validator("name")
     @classmethod
@@ -155,3 +156,9 @@ class ConnectorResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     health: Optional[ConnectorHealth] = None
+
+
+class ConnectorCreateResponse(ConnectorResponse):
+    """API view model on initial creation, exposing raw generated webhook secret exactly once."""
+
+    raw_auth_secret: Optional[str] = None

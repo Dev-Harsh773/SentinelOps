@@ -1,5 +1,6 @@
 """Registered connectors monitoring and diagnostic view."""
 
+from datetime import datetime, timezone
 from typing import List
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -67,6 +68,11 @@ class ConnectorsView(QWidget):
         # Signals
         app_signals.connectors_updated.connect(self._on_connectors_updated)
         app_signals.connection_changed.connect(self._on_connection_changed)
+        app_signals.active_project_changed.connect(self._on_project_changed)
+
+        # Hydrate initial view state if active project is already selected
+        if self.state.active_project_id:
+            self._on_project_changed(self.state.active_project_id)
 
     def _update_test_button_for_row(self, row: int, connector_id: str) -> None:
         """Update test button presentation for a specific table row from state."""
@@ -168,5 +174,53 @@ class ConnectorsView(QWidget):
             self._testing_connector_ids.discard(connector_id)
             self._sync_test_button_for_connector(connector_id)
             app_signals.action_failed.emit("Connector Test Failed", str(exc))
+
+        self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+
+    def _on_project_changed(self, project_id: str) -> None:
+        """Handle project selection change by displaying cached data and triggering a fresh fetch."""
+        if not project_id:
+            self._on_connectors_updated([], None)
+            return
+
+        # 1. Immediately hydrate from in-memory cache if available
+        if project_id in self.state.cached_connectors:
+            cached_conns, ts = self.state.cached_connectors[project_id]
+            self._on_connectors_updated(cached_conns, ts)
+        else:
+            self._on_connectors_updated([], None)
+
+        # 2. Fetch latest connectors for the project asynchronously
+        self.refresh()
+
+    def on_view_activated(self) -> None:
+        """Invoked when user navigates to Connectors tab."""
+        active_id = self.state.active_project_id
+        if active_id:
+            # Rehydrate from cached connectors or trigger refresh if empty
+            if active_id in self.state.cached_connectors:
+                cached_conns, ts = self.state.cached_connectors[active_id]
+                self._on_connectors_updated(cached_conns, ts)
+            else:
+                self.refresh()
+
+    def refresh(self) -> None:
+        """Asynchronously fetch registered connectors for active project."""
+        project_id = self.state.active_project_id
+        if not project_id or not self.state.is_online():
+            return
+
+        def worker():
+            return self.client.list_connectors(project_id=project_id)
+
+        def on_success(connectors: List[ConnectorDTO]):
+            if self.state.active_project_id == project_id:
+                self.state.set_connectors(project_id, connectors)
+            else:
+                now = datetime.now(timezone.utc)
+                self.state.cached_connectors[project_id] = (connectors, now)
+
+        def on_error(exc: Exception):
+            pass
 
         self.task_runner.run(worker, on_success=on_success, on_error=on_error)

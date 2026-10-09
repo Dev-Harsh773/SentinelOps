@@ -173,6 +173,51 @@ def test_connectors_view_rendering(qapp):
     assert "Poller" in view.table.item(0, 0).text()
 
 
+def test_connectors_view_auto_hydration_on_project_selection_and_activation(qapp):
+    """Prove selecting/restoring a project automatically triggers connectors fetch and populates table without manual refresh."""
+    state = AppState()
+    state.set_connection_status("online")
+
+    client = MagicMock(spec=SentinelOpsClient)
+    sample_conns = [
+        ConnectorDTO(
+            connector_id="conn-stage21-gh",
+            project_id="github-stage21",
+            name="GitHub Webhook",
+            connector_type="webhook",
+            health=ConnectorHealthDTO(
+                connector_id="conn-stage21-gh",
+                operational_status="healthy",
+                target_status="healthy",
+                consecutive_operational_errors=0,
+            ),
+        )
+    ]
+    client.list_connectors.return_value = sample_conns
+
+    # Synchronous task runner for deterministic headless testing
+    runner = MagicMock()
+    runner.run.side_effect = lambda worker, on_success=None, on_error=None: on_success(worker()) if on_success else None
+
+    view = ConnectorsView(client=client, task_runner=runner)
+    assert view.table.rowCount() == 0
+
+    # Simulate user or startup selecting the project
+    state.set_active_project("github-stage21")
+
+    # Verify connectors were fetched and table immediately populated
+    client.list_connectors.assert_called_with(project_id="github-stage21")
+    assert view.table.rowCount() == 1
+    assert "GitHub Webhook" in view.table.item(0, 0).text()
+    assert "(1 registered)" in view.count_lbl.text()
+
+    # Simulate navigating to Connectors view (on_view_activated)
+    view.on_view_activated()
+    assert view.table.rowCount() == 1
+    assert "GitHub Webhook" in view.table.item(0, 0).text()
+
+
+
 def test_knowledge_view_rendering(qapp):
     client = SentinelOpsClient()
     runner = TaskRunner()

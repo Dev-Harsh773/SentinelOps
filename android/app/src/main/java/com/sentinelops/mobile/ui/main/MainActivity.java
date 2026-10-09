@@ -1,10 +1,14 @@
 package com.sentinelops.mobile.ui.main;
 
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.navigation.NavController;
@@ -15,12 +19,16 @@ import com.sentinelops.mobile.R;
 import com.sentinelops.mobile.data.remote.model.ProjectDTO;
 import com.sentinelops.mobile.databinding.ActivityMainBinding;
 import com.sentinelops.mobile.ui.common.Resource;
+import com.sentinelops.mobile.workers.IncidentPollingWorker;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final int REQUEST_CODE_POST_NOTIFICATIONS = 1001;
+
     private ActivityMainBinding binding;
     private MainViewModel viewModel;
+    private NavController navController;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -33,6 +41,67 @@ public class MainActivity extends AppCompatActivity {
         setupNavigation();
         setupProjectSelector();
         observeState();
+        checkNotificationPermissionAndScheduleWorker();
+        handleNotificationIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleNotificationIntent(intent);
+    }
+
+    private void handleNotificationIntent(Intent intent) {
+        if (intent == null || !intent.hasExtra(IncidentPollingWorker.EXTRA_INCIDENT_ID)) {
+            return;
+        }
+
+        String incidentId = intent.getStringExtra(IncidentPollingWorker.EXTRA_INCIDENT_ID);
+        String projectId = intent.getStringExtra(IncidentPollingWorker.EXTRA_PROJECT_ID);
+
+        // Remove extras so subsequent configuration changes or recreations do not re-trigger navigation
+        intent.removeExtra(IncidentPollingWorker.EXTRA_INCIDENT_ID);
+        intent.removeExtra(IncidentPollingWorker.EXTRA_PROJECT_ID);
+
+        if (incidentId == null || incidentId.trim().isEmpty()) {
+            return;
+        }
+
+        if (projectId != null && !projectId.trim().isEmpty()) {
+            String currentProjectId = viewModel.getActiveProjectId().getValue();
+            if (!projectId.equals(currentProjectId)) {
+                Resource<List<ProjectDTO>> projectsResource = viewModel.getProjectsResource().getValue();
+                if (projectsResource != null && projectsResource.data != null) {
+                    for (ProjectDTO p : projectsResource.data) {
+                        if (projectId.equals(p.projectId)) {
+                            viewModel.selectProject(p);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (navController != null) {
+            Bundle args = new Bundle();
+            args.putString("incident_id", incidentId);
+            navController.navigate(R.id.incident_detail, args);
+        }
+    }
+
+    private void checkNotificationPermissionAndScheduleWorker() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_CODE_POST_NOTIFICATIONS
+                );
+            }
+        }
+        IncidentPollingWorker.schedule(this);
     }
 
     @Override
@@ -50,7 +119,7 @@ public class MainActivity extends AppCompatActivity {
             (NavHostFragment) getSupportFragmentManager().findFragmentById(R.id.nav_host_fragment);
         if (navHostFragment == null) return;
 
-        NavController navController = navHostFragment.getNavController();
+        this.navController = navHostFragment.getNavController();
 
         navController.addOnDestinationChangedListener((controller, destination, arguments) -> {
             int destId = destination.getId();

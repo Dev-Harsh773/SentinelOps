@@ -16,6 +16,7 @@ from desktop.api.exceptions import (
     ValidationError,
 )
 from desktop.api.models import (
+    ConnectorCreateDTO,
     ConnectorDTO,
     EvidenceDTO,
     IncidentDTO,
@@ -23,6 +24,7 @@ from desktop.api.models import (
     NotificationDTO,
     ProjectDTO,
     ProjectKnowledgeDTO,
+    ProjectReadinessDTO,
     RemediationBranchDTO,
     RemediationDTO,
     RemediationReviewDTO,
@@ -146,6 +148,52 @@ class SentinelOpsClient:
         data = self._request("POST", f"/projects/{project_id}/reindex", timeout=self.reindex_timeout)
         return ProjectKnowledgeDTO.from_dict(data)
 
+    def register_project(
+        self,
+        name: str,
+        workspace_path: str,
+        project_id: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> ProjectDTO:
+        """Onboard local repository workspace."""
+        payload: Dict[str, Any] = {
+            "name": name,
+            "workspace_path": workspace_path,
+        }
+        if project_id:
+            payload["project_id"] = project_id
+        if description:
+            payload["description"] = description
+        data = self._request("POST", "/projects", json=payload, timeout=self.reindex_timeout)
+        return ProjectDTO.from_dict(data)
+
+    def register_github_project(
+        self,
+        name: str,
+        repo_url: str,
+        project_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> ProjectDTO:
+        """Atomically clone public GitHub repository and onboard project."""
+        payload: Dict[str, Any] = {
+            "name": name,
+            "repo_url": repo_url,
+        }
+        if project_id:
+            payload["project_id"] = project_id
+        if branch:
+            payload["branch"] = branch
+        if description:
+            payload["description"] = description
+        data = self._request("POST", "/projects/github", json=payload, timeout=90.0)
+        return ProjectDTO.from_dict(data)
+
+    def get_project_readiness(self, project_id: str) -> ProjectReadinessDTO:
+        """Fetch operational readiness and connection status for a project."""
+        data = self._request("GET", f"/projects/{project_id}/readiness")
+        return ProjectReadinessDTO.from_dict(data)
+
     # -------------------------------------------------------------------------
     # Incidents
     # -------------------------------------------------------------------------
@@ -250,6 +298,11 @@ class SentinelOpsClient:
     def test_connector(self, connector_id: str) -> Dict[str, Any]:
         """Perform non-mutating connectivity test."""
         return self._request("POST", f"/connectors/{connector_id}/test")
+
+    def create_connector(self, payload: Dict[str, Any]) -> ConnectorCreateDTO:
+        """Register a new connector, capturing one-time secret for webhooks."""
+        data = self._request("POST", "/connectors", json=payload)
+        return ConnectorCreateDTO.from_dict(data)
 
     # -------------------------------------------------------------------------
     # Safe Actions

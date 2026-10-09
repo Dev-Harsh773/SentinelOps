@@ -7,6 +7,7 @@ from app.connectors.auth import WebhookAuthenticationError
 from app.connectors.dependencies import get_connector_service
 from app.connectors.models import (
     ConnectorCreateRequest,
+    ConnectorCreateResponse,
     ConnectorResponse,
     ConnectorUpdateRequest,
     WebhookIngestRequest,
@@ -24,14 +25,14 @@ router = APIRouter(prefix="/connectors", tags=["Connectors"])
 
 @router.post(
     "",
-    response_model=ConnectorResponse,
+    response_model=ConnectorCreateResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new telemetry or deployment connector",
 )
 async def create_connector(
     payload: ConnectorCreateRequest,
     service: ConnectorService = Depends(get_connector_service),
-) -> ConnectorResponse:
+) -> ConnectorCreateResponse:
     """Create a new connector bound to an onboarded project."""
     try:
         return await service.create_connector(payload)

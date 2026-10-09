@@ -1,7 +1,7 @@
 """FastAPI dependencies and singleton instances for Sentinel Watcher."""
 
 from typing import Optional
-from app.common.config import config
+from app.common import config as config_module
 from app.correlation.dependencies import reset_correlation_state
 from app.detection.dependencies import get_detection_engine, reset_detection_state
 from app.watcher.buffer import RollingTelemetryBuffer
@@ -13,13 +13,23 @@ from app.watcher.storage import SqliteTelemetryStore
 _buffer_instance: Optional[RollingTelemetryBuffer] = None
 _storage_instance: Optional[SqliteTelemetryStore] = None
 _service_instance: Optional[WatcherService] = None
+_custom_watcher_db_path: Optional[str] = None
+
+
+def set_custom_watcher_db_path(db_path: Optional[str]) -> None:
+    """Explicitly redirect watcher storage to a custom DB path for test isolation."""
+    global _custom_watcher_db_path, _storage_instance
+    _custom_watcher_db_path = db_path
+    if _storage_instance is not None:
+        _storage_instance.close()
+        _storage_instance = None
 
 
 def get_watcher_buffer() -> RollingTelemetryBuffer:
     """Return the shared RollingTelemetryBuffer instance."""
     global _buffer_instance
     if _buffer_instance is None:
-        _buffer_instance = RollingTelemetryBuffer(capacity=config.watcher_buffer_capacity)
+        _buffer_instance = RollingTelemetryBuffer(capacity=config_module.config.watcher_buffer_capacity)
     return _buffer_instance
 
 
@@ -27,7 +37,8 @@ def get_watcher_storage() -> SqliteTelemetryStore:
     """Return the shared SqliteTelemetryStore instance."""
     global _storage_instance
     if _storage_instance is None:
-        _storage_instance = SqliteTelemetryStore(db_path=config.watcher_db_path)
+        db_path = _custom_watcher_db_path or config_module.config.watcher_db_path
+        _storage_instance = SqliteTelemetryStore(db_path=db_path)
     return _storage_instance
 
 
@@ -37,22 +48,23 @@ def get_watcher_service() -> WatcherService:
     if _service_instance is None:
         buffer = get_watcher_buffer()
         storage = get_watcher_storage()
+        cfg = config_module.config
 
         # Instantiate active collectors based on centralized configuration
         file_collector = JsonlFileCollector(
-            log_path=config.watcher_log_path,
-            project_id=config.watcher_default_project_id,
-            service=config.watcher_default_service,
-            environment=config.watcher_default_environment,
-            poll_interval_seconds=config.watcher_poll_interval_seconds,
+            log_path=cfg.watcher_log_path,
+            project_id=cfg.watcher_default_project_id,
+            service=cfg.watcher_default_service,
+            environment=cfg.watcher_default_environment,
+            poll_interval_seconds=cfg.watcher_poll_interval_seconds,
         )
 
         health_collector = HealthCheckCollector(
-            health_url=config.watcher_health_check_url,
-            project_id=config.watcher_default_project_id,
-            service=config.watcher_default_service,
-            environment=config.watcher_default_environment,
-            probe_interval_seconds=config.watcher_health_check_interval_seconds,
+            health_url=cfg.watcher_health_check_url,
+            project_id=cfg.watcher_default_project_id,
+            service=cfg.watcher_default_service,
+            environment=cfg.watcher_default_environment,
+            probe_interval_seconds=cfg.watcher_health_check_interval_seconds,
         )
 
         detection_engine = get_detection_engine()
@@ -61,8 +73,8 @@ def get_watcher_service() -> WatcherService:
             storage=storage,
             collectors=[file_collector, health_collector],
             detection_engine=detection_engine,
-            retention_hours=config.watcher_db_retention_hours,
-            max_storage_events=config.watcher_db_max_events,
+            retention_hours=cfg.watcher_db_retention_hours,
+            max_storage_events=cfg.watcher_db_max_events,
         )
 
     return _service_instance

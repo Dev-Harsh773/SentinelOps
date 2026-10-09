@@ -18,10 +18,16 @@ from desktop.state.signals import app_signals
 class HeaderBar(QWidget):
     """Top application header with brand, project switcher, and health indicator."""
 
-    def __init__(self, on_refresh: Optional[Callable[[], None]] = None, parent=None) -> None:
+    def __init__(
+        self,
+        on_refresh: Optional[Callable[[], None]] = None,
+        on_onboard: Optional[Callable[[], None]] = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("HeaderBar")
         self.on_refresh = on_refresh
+        self.on_onboard = on_onboard
         self.state = AppState()
 
         layout = QHBoxLayout(self)
@@ -48,6 +54,15 @@ class HeaderBar(QWidget):
         self.project_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.project_combo.currentIndexChanged.connect(self._on_project_selected)
         layout.addWidget(self.project_combo)
+
+        # Onboard App Button
+        self.onboard_btn = QPushButton("+ Onboard App", self)
+        self.onboard_btn.setStyleSheet(
+            "background-color: #2563EB; color: #FFFFFF; font-weight: 600; border-radius: 4px; padding: 4px 10px;"
+        )
+        if self.on_onboard:
+            self.onboard_btn.clicked.connect(self.on_onboard)
+        layout.addWidget(self.onboard_btn)
 
         layout.addStretch()
 

@@ -50,6 +50,10 @@ class GitArgumentSecurityError(SecurityError):
     """Raised when a Git command parameter fails strict security validation."""
 
 
+class GitURLSecurityError(SecurityError):
+    """Raised when a Git clone URL fails strict security validation."""
+
+
 class SSRFGuard:
     """Validates outbound HTTP targets immediately before network transmission."""
 
@@ -235,3 +239,62 @@ class GitArgumentValidator:
         if not COMMIT_HASH_REGEX.match(cleaned):
             raise GitArgumentSecurityError(f"Invalid commit hash format: '{cleaned}'")
         return cleaned.lower()
+
+
+GITHUB_REPO_URL_REGEX = re.compile(
+    r"^https://(?:www\.)?github\.com/[a-zA-Z0-9_\-\.]+/[a-zA-Z0-9_\-\.]+(?:\.git)?$"
+)
+
+
+class GitURLValidator:
+    """Strictly validates remote Git repository URLs for cloning."""
+
+    @classmethod
+    def validate_github_https_url(cls, url: str) -> str:
+        """Ensure URL is HTTPS, targeting github.com, without user credentials or arbitrary parameters."""
+        cleaned = url.strip()
+        if not cleaned:
+            raise GitURLSecurityError("Git repository URL cannot be empty.")
+        if "@" in cleaned:
+            raise GitURLSecurityError("Embedded credentials in Git repository URLs are not permitted.")
+        for forbidden in ("ssh://", "git@", "file://", "http://"):
+            if cleaned.lower().startswith(forbidden):
+                raise GitURLSecurityError("Only HTTPS GitHub URLs are supported (e.g. 'https://github.com/owner/repo').")
+
+        parsed = urllib.parse.urlparse(cleaned)
+        if parsed.scheme.lower() != "https":
+            raise GitURLSecurityError(f"Unsupported URL scheme '{parsed.scheme}'. Only HTTPS is permitted.")
+        if parsed.netloc.lower() not in ("github.com", "www.github.com"):
+            raise GitURLSecurityError(f"Unsupported host '{parsed.netloc}'. Only 'github.com' is supported in Stage 21.")
+
+        path_parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(path_parts) != 2:
+            raise GitURLSecurityError("GitHub URL must match 'https://github.com/owner/repository'.")
+
+        if not GITHUB_REPO_URL_REGEX.match(cleaned):
+            raise GitURLSecurityError(f"Invalid characters in GitHub repository URL: '{cleaned}'")
+
+        return cleaned
+
+
+def get_managed_workspaces_root() -> Path:
+    """Resolve and create the root directory for managed cloned workspaces."""
+    import sys
+    import os
+    from app.common import config as config_module
+
+    cfg = config_module.config
+    if cfg.sentinel_workspaces_root:
+        root = Path(cfg.sentinel_workspaces_root).resolve()
+    elif getattr(sys, "frozen", False) or (sys.platform == "win32" and not (Path(__file__).resolve().parent.parent.parent / "pyproject.toml").exists()):
+        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        root = (Path(local_app_data) / "SentinelOps" / "workspaces").resolve()
+    elif getattr(sys, "frozen", False):
+        local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".local" / "share")
+        root = (Path(local_app_data) / "SentinelOps" / "workspaces").resolve()
+    else:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        root = (repo_root / "runtime" / "workspaces").resolve()
+
+    root.mkdir(parents=True, exist_ok=True)
+    return root

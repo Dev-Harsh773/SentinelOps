@@ -29,10 +29,11 @@ def test_control_center_binary_exists_and_runs():
     assert not any(f.endswith(".db") for f in dist_files), "Found .db file inside packaged dist directory!"
     assert not any(f.startswith(".env") for f in dist_files), "Found .env file inside packaged dist directory!"
     assert not any(f.endswith(".jsonl") for f in dist_files), "Found .jsonl runtime file inside packaged dist directory!"
+    assert not any("workspaces" in str(p).lower() for p in dist_dir.glob("**/*")), "Found workspace inside packaged dist directory!"
 
 
 def test_distribution_packages_exclude_sensitive_and_test_files():
-    """Verify built .whl and .tar.gz archives strictly exclude tests/, .env*, .db*, and .jsonl files."""
+    """Verify built .whl and .tar.gz archives strictly exclude tests/, .env*, .db*, .jsonl, and workspaces/ files."""
     repo_root = Path(__file__).parent.parent.resolve()
     dist_dir = repo_root / "dist"
 
@@ -52,6 +53,7 @@ def test_distribution_packages_exclude_sensitive_and_test_files():
             normalized = name.replace("\\", "/").lower()
             assert not normalized.startswith("tests/"), f"Wheel contains test file: {name}"
             assert "/tests/" not in normalized, f"Wheel contains test file: {name}"
+            assert "workspaces" not in normalized, f"Wheel contains workspace file: {name}"
             assert not Path(normalized).name.startswith(".env"), f"Wheel contains .env file: {name}"
             assert not normalized.endswith((".db", ".db-wal", ".db-shm")), f"Wheel contains database file: {name}"
             assert not normalized.endswith(".jsonl"), f"Wheel contains runtime JSONL file: {name}"
@@ -66,6 +68,7 @@ def test_distribution_packages_exclude_sensitive_and_test_files():
             # Check if any path segment is 'tests'
             assert "tests" not in parts[1:], f"sdist contains tests directory: {name}"
             assert "android" not in parts[1:], f"sdist contains android directory: {name}"
+            assert "workspaces" not in parts[1:], f"sdist contains workspaces directory: {name}"
             filename = Path(normalized).name
             assert not filename.startswith(".env"), f"sdist contains .env file: {name}"
             assert not filename.endswith((".db", ".db-wal", ".db-shm")), f"sdist contains database file: {name}"

@@ -1852,3 +1852,91 @@ Harden SentinelOps for safer non-development operation and provide reproducible 
 
 ### User Approval
 User Approval: Approved
+
+---
+
+## Stage 21 — End-to-End Application Onboarding & Connection Flow
+
+### Objective
+Close the operational and experiential gap between core platform capabilities and real first-time application onboarding. Provide a unified, secure onboarding journey for external target applications across Windows Control Center, backend APIs, and Android mobile alerts. Enable public GitHub and local repository source onboarding, atomic concurrency-safe workspace allocation, automated project ID derivation, one-time raw webhook secret delivery with subsequent masking, operational connection readiness monitoring, and best-effort WorkManager background alert polling for Android.
+
+### Design Decisions
+- **Deterministic URL-Safe Project ID Derivation**: Derived slugs from project display names (e.g. `Order Service` -> `order-service`), handling duplicate collisions deterministically (`order-service-2`, `order-service-3`) while retaining optional caller override.
+- **Hardened Git Clone Execution**: Enforced strict HTTPS syntax, public `github.com` host restriction, no embedded authentication credentials, branch parameter validation through `GitArgumentValidator`, `shell=False`, 60-second timeouts, and mandatory `--` argument boundary delimiter before the target repository URL.
+- **Concurrency-Safe Workspace Reservation via Staging**: Cloned and indexed projects in unique per-request staging directories (`.staging/<uuid>`) before atomically moving them into managed project directories (`workspaces/<project-id>`). If conflict or rollback occurs, only operation-owned resources are cleaned up, guaranteeing zero cross-operation deletion of competing concurrent workspaces.
+- **Packaging & Workspace Hygiene**: Explicitly ignored and excluded `workspaces/` and `runtime/workspaces/` across `.gitignore`, `MANIFEST.in`, and `pyproject.toml` sdist/wheel packaging rules.
+- **One-Time Webhook Secret Delivery Contract**: Webhook connector creation (`POST /connectors`) auto-generates or ingests raw authentication secrets returned exactly once in `ConnectorCreateResponse.raw_auth_secret`. Subsequent `GET` and list endpoints strictly redact secrets behind standard masking (`sk-****<tail>`).
+- **Operational Connection Readiness Model**: Implemented `GET /projects/{project_id}/readiness` synthesizing workspace connection status, AST code indexing state, connector count, poller health checks, canonical `last_telemetry_at`, configurable recency window (`TELEMETRY_RECENCY_WINDOW_SECONDS`), and external webhook reachability evaluation (`PUBLIC_INGRESS_URL`).
+- **Windows Control Center Onboarding Wizard**: Built `desktop/ui/onboarding_wizard.py` presenting a 4-step interactive QDialog (`Project Details & Source` -> `Indexing & Verification` -> `Telemetry & Connector Config` -> `Connection Verification & Secret Handover`). Accessible from HeaderBar (`+ Onboard App`) and empty states.
+- **Android WorkManager Background Alerts**: Implemented `IncidentPollingWorker` using Android WorkManager unique periodic work (15-minute interval, best-effort background alerting semantics), robust deduplication bounded at 100 historical IDs in `AppPreferences`, notification channel setup, and Android 13+ runtime `POST_NOTIFICATIONS` permission requesting in `MainActivity`.
+
+### Files Added / Changed
+- `app/common/config.py`: Added `telemetry_recency_window_seconds`, `public_ingress_url`, and `sentinel_workspaces_root`.
+- `app/common/security.py`: Added `GitURLSecurityError`, `GitURLValidator.validate_github_https_url`, and `get_managed_workspaces_root()`.
+- `app/projects/schemas.py`: Made `project_id` optional in `ProjectRegisterRequest`, added `GitHubProjectRegisterRequest`, and `ProjectReadinessResponse`.
+- `app/projects/service.py`: Added slug generation `_generate_project_id`, concurrency-safe `register_github_project`, and `get_project_readiness`.
+- `app/projects/routes.py`: Added `POST /projects/github` and `GET /projects/{project_id}/readiness`.
+- `app/connectors/models.py`: Added `ConnectorCreateResponse(ConnectorResponse)` model exposing `raw_auth_secret`.
+- `app/connectors/service.py`: Updated `create_connector` to expose `raw_auth_secret` on creation only.
+- `app/connectors/routes.py`: Updated `POST /connectors` return type to `ConnectorCreateResponse`.
+- `app/watcher/dependencies.py`: Added `set_custom_watcher_db_path` and dynamic configuration access for test isolation.
+- `.gitignore`: Excluded `workspaces/` and `runtime/workspaces/`.
+- `MANIFEST.in`: Excluded `workspaces/` and `runtime/workspaces/` from source distributions.
+- `pyproject.toml`: Excluded `workspaces` from wheel packaging.
+- `desktop/api/models.py`: Added `ConnectorCreateDTO` and `ProjectReadinessDTO`.
+- `desktop/api/client.py`: Added `register_project`, `register_github_project`, `create_connector`, and `get_project_readiness`.
+- `desktop/ui/onboarding_wizard.py`: Created multi-step onboarding wizard dialog.
+- `desktop/ui/components/header.py`: Added `+ Onboard App` header button.
+- `desktop/ui/main_window.py`: Wired onboarding button to show `OnboardingWizardDialog` and refresh project selector.
+- `android/app/build.gradle`: Added `androidx.work:work-runtime:2.9.1`.
+- `android/app/src/main/AndroidManifest.xml`: Added `<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />`.
+- `android/app/src/main/java/com/sentinelops/mobile/data/local/AppPreferences.java`: Added bounded incident alert deduplication methods.
+- `android/app/src/main/java/com/sentinelops/mobile/workers/IncidentPollingWorker.java`: Created periodic polling worker.
+- `android/app/src/main/java/com/sentinelops/mobile/ui/main/MainActivity.java`: Added WorkManager periodic work scheduling and Android 13+ permission request.
+- `android/app/src/test/java/com/sentinelops/mobile/workers/IncidentPollingDeduplicationTest.java`: Added JVM unit tests for polling and deduplication.
+- `tests/test_desktop_packaging_smoke.py`: Verified workspace exclusion assertions.
+- `tests/test_stage21_connectors.py`: Added 4 tests for secret generation and masking lifecycle.
+- `tests/test_stage21_onboarding.py`: Added 12 tests for slug generation, URL validation, `--` argv boundary, staging rollback, concurrency safety, readiness recency, and desktop client.
+- `docs/PROJECT_JOURNAL.md`: Updated Stage 21 entry.
+- `project.md`: Updated Stage 21 scope and status.
+
+### Problems Encountered & Resolutions
+- **Git Argument Boundary & Branch Injection**: Addressed option injection vulnerability by enforcing `--` parameter delimiter immediately preceding URL in git clone arguments and validating branches with regex before passing to subprocess.
+- **Concurrent Workspace Collision**: Addressed potential race conditions and destructive rollbacks by adopting isolated staging directories (`.staging/<op_id>`) with atomic directory rename and DB registration; losing operations only clean their own staging folders.
+- **One-Time Secret Masking Preservation**: Preserved existing masking architecture by creating `ConnectorCreateResponse` subclass of `ConnectorResponse` that surfaces `raw_auth_secret` only on `POST /connectors`, ensuring all subsequent `GET` requests mask credentials.
+- **Config & Test Isolation**: Replaced static module-level `config` references in service modules with dynamic config lookups, enabling test fixtures to modify settings (`telemetry_recency_window_seconds`, `sentinel_workspaces_root`) via monkeypatching without bleeding across test suites.
+
+### Verification
+- **Automated Test Suite**:
+  - Full Python regression: **512 passed** in 103.88s (100% pass rate, zero failures, zero regressions across Stages 0–21).
+  - Desktop UI tests (`tests/desktop`): **76 passed** in 4.35s (including auto-hydration on project selection and view activation).
+  - Dedicated Stage 21 connector tests (`tests/test_stage21_connectors.py`): 5 passed in 2.10s.
+  - Dedicated Stage 21 onboarding & concurrency tests (`tests/test_stage21_onboarding.py`): 12 passed in 10.10s.
+  - Packaging smoke tests (`tests/test_desktop_packaging_smoke.py`): 2 passed in 0.41s.
+  - Android JVM unit test suite (`./gradlew testDebugUnitTest --rerun-tasks`): 22 tasks executed, BUILD SUCCESSFUL with all 32 unit tests passing cleanly.
+  - Whitespace and formatting: `git diff --check` clean.
+
+- **Manual Verification Completed & Approved**:
+  - **Local Application Onboarding**: Passed via Windows Control Center onboarding wizard (`+ Onboard App`).
+  - **Deterministic Automatic Project ID Generation**: Passed (`Order Service` -> `order-service`, duplicates resolve safely to `order-service-2`).
+  - **Local Source Indexing & Knowledge View**: Passed AST code parsing, route extraction, and Knowledge base presentation.
+  - **Public GitHub Repository Onboarding**: Passed end-to-end HTTPS clone, staging reservation, and index population.
+  - **Managed Workspace Persistence**: Passed under `workspaces/` with strict staging isolation and packaging exclusion.
+  - **Health Poller**: Passed periodic and immediate background polling for operational status and telemetry buffer state.
+  - **Authenticated Webhook Telemetry**: Passed with one-time raw secret handover and subsequent server-side masking.
+  - **Automatic HIGH Incident Creation**: Passed upon ingested failure signals.
+  - **Incident Evidence Linkage**: Passed with correlated tracebacks and evidence tabs.
+  - **Desktop Restart Persistence**: Passed across Control Center app restart with state preservation.
+  - **Backend Restart Persistence**: Passed across FastAPI server reload with SQLite persistence.
+  - **Android Backend Connectivity**: Passed phone connection to SentinelOps backend over hotspot network.
+  - **Android OS Background Notification**: Passed WorkManager periodic worker alert delivery with runtime `POST_NOTIFICATIONS` permissions.
+  - **Notification Tap & Navigation**: Passed tapping OS notification routes directly into `IncidentDetailFragment` inside SentinelOps.
+  - **Android Notification Semantics Confirmed**: WorkManager periodic delivery is best-effort and governed by OS battery management; it is not real-time push.
+  - **Connector List Auto-Hydration**: Passed after manual-verification fix; switching or restoring projects immediately populates connectors without requiring manual Refresh.
+
+### Known Limitations
+- GitHub onboarding in Stage 21 is constrained to public HTTPS repositories (`https://github.com/...`). Private repository OAuth/SSH credentials are not implemented in Stage 21.
+- Android background alerts are best-effort WorkManager polling (minimum 15-minute interval governed by OS battery optimization), not real-time push delivery.
+
+### User Approval
+User Approval: Approved

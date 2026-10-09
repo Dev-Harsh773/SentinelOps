@@ -14,6 +14,7 @@ from app.connectors.models import (
     Connector,
     ConnectorConfig,
     ConnectorCreateRequest,
+    ConnectorCreateResponse,
     ConnectorHealth,
     ConnectorResponse,
     ConnectorStatus,
@@ -72,7 +73,7 @@ class ConnectorService:
                 self._connector_locks[connector_id] = asyncio.Lock()
             return self._connector_locks[connector_id]
 
-    async def create_connector(self, request: ConnectorCreateRequest) -> ConnectorResponse:
+    async def create_connector(self, request: ConnectorCreateRequest) -> ConnectorCreateResponse:
         """Register a new connector, validating config and enforcing project ownership."""
         now = datetime.now(timezone.utc)
         connector_id = request.connector_id or f"conn-{uuid.uuid4().hex[:8]}"
@@ -80,12 +81,26 @@ class ConnectorService:
         if request.connector_type == ConnectorType.HTTP_POLLER and not request.config.url:
             raise ValueError("URL is required for HTTP poller connectors")
 
+        raw_secret: Optional[str] = None
+        config_obj = request.config
+        if request.connector_type == ConnectorType.WEBHOOK:
+            config_dict = request.config.model_dump()
+            explicit_secret = config_dict.get("auth_secret")
+            if explicit_secret:
+                raw_secret = explicit_secret
+            elif request.generate_secret:
+                raw_secret = f"sk-sec-{uuid.uuid4().hex}"
+                config_dict["auth_secret"] = raw_secret
+                if not config_dict.get("token_header") and not config_dict.get("signature_header"):
+                    config_dict["token_header"] = "X-Sentinel-Secret"
+                config_obj = ConnectorConfig.model_validate(config_dict)
+
         connector = Connector(
             connector_id=connector_id,
             project_id=request.project_id,
             name=request.name,
             connector_type=request.connector_type,
-            config=request.config,
+            config=config_obj,
             status=request.status,
             created_at=now,
             updated_at=now,
@@ -105,7 +120,7 @@ class ConnectorService:
                     logger.error("Compensating rollback failed for connector %s: %s", connector_id, rb_exc)
                 raise
 
-        return ConnectorResponse(
+        return ConnectorCreateResponse(
             connector_id=created.connector_id,
             project_id=created.project_id,
             name=created.name,
@@ -115,6 +130,7 @@ class ConnectorService:
             created_at=created.created_at,
             updated_at=created.updated_at,
             health=health,
+            raw_auth_secret=raw_secret,
         )
 
     def get_connector(self, connector_id: str) -> ConnectorResponse:

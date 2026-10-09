@@ -665,3 +665,55 @@ class IncidentReportDTO:
             timeline=events,
             generated_at=_parse_datetime(data.get("generated_at")),
         )
+
+
+@dataclass
+class ConnectorCreateDTO(ConnectorDTO):
+    raw_auth_secret: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConnectorCreateDTO":
+        base = ConnectorDTO.from_dict(data)
+        return cls(
+            connector_id=base.connector_id,
+            project_id=base.project_id,
+            name=base.name,
+            connector_type=base.connector_type,
+            config=base.config,
+            status=base.status,
+            created_at=base.created_at,
+            updated_at=base.updated_at,
+            health=base.health,
+            raw_auth_secret=data.get("raw_auth_secret"),
+        )
+
+
+@dataclass
+class ProjectReadinessDTO:
+    project_id: str
+    project_status: str
+    is_indexed: bool
+    source_connected: bool
+    connectors_count: int
+    active_connectors_count: int
+    health_status: Optional[str] = None
+    last_telemetry_at: Optional[datetime] = None
+    telemetry_receiving: bool = False
+    recency_window_seconds: int = 900
+    external_webhook_ready: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ProjectReadinessDTO":
+        return cls(
+            project_id=str(data.get("project_id", "")),
+            project_status=str(data.get("project_status", "ready")),
+            is_indexed=bool(data.get("is_indexed", False)),
+            source_connected=bool(data.get("source_connected", False)),
+            connectors_count=int(data.get("connectors_count", 0)),
+            active_connectors_count=int(data.get("active_connectors_count", 0)),
+            health_status=data.get("health_status"),
+            last_telemetry_at=_parse_datetime(data.get("last_telemetry_at")),
+            telemetry_receiving=bool(data.get("telemetry_receiving", False)),
+            recency_window_seconds=int(data.get("recency_window_seconds", 900)),
+            external_webhook_ready=bool(data.get("external_webhook_ready", True)),
+        )

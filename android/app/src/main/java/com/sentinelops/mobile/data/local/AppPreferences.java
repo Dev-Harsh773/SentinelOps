@@ -42,6 +42,30 @@ public class AppPreferences {
         }
     }
 
+    private static final String KEY_ALERTED_INCIDENT_IDS = "key_alerted_incident_ids";
+    public static final int MAX_ALERTED_IDS = 100;
+
+    public java.util.Set<String> getAlertedIncidentIds() {
+        java.util.Set<String> set = prefs.getStringSet(KEY_ALERTED_INCIDENT_IDS, null);
+        return set != null ? new java.util.HashSet<>(set) : new java.util.HashSet<>();
+    }
+
+    public void addAlertedIncidentId(String incidentId) {
+        if (incidentId == null || incidentId.trim().isEmpty()) return;
+        java.util.Set<String> current = getAlertedIncidentIds();
+        current.add(incidentId.trim());
+        if (current.size() > MAX_ALERTED_IDS) {
+            java.util.List<String> list = new java.util.ArrayList<>(current);
+            current = new java.util.HashSet<>(list.subList(list.size() - MAX_ALERTED_IDS, list.size()));
+        }
+        prefs.edit().putStringSet(KEY_ALERTED_INCIDENT_IDS, current).apply();
+    }
+
+    public boolean isIncidentAlerted(String incidentId) {
+        if (incidentId == null) return false;
+        return getAlertedIncidentIds().contains(incidentId.trim());
+    }
+
     public int getPollingIntervalSeconds() {
         return prefs.getInt(KEY_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL);
     }

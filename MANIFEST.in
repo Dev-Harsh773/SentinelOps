@@ -9,6 +9,8 @@ prune dist
 prune .pytest_cache
 prune .idea
 prune .vscode
+prune workspaces
+prune runtime/workspaces
 
 # Exclude environment, secrets, database and runtime log files
 exclude .env*

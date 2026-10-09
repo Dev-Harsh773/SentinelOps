@@ -3,6 +3,9 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.common.security import GitArgumentSecurityError, GitURLSecurityError
+from app.connectors.dependencies import get_connector_store
+from app.connectors.store import SqliteConnectorStore
 from app.knowledge.dependencies import get_project_knowledge_service
 from app.knowledge.models import ProjectKnowledgeSnapshot
 from app.knowledge.service import (
@@ -13,7 +16,12 @@ from app.knowledge.service import (
     ProjectWorkspaceNotFoundError,
 )
 from app.projects.dependencies import get_project_service
-from app.projects.schemas import ProjectRegisterRequest, ProjectResponse
+from app.projects.schemas import (
+    GitHubProjectRegisterRequest,
+    ProjectReadinessResponse,
+    ProjectRegisterRequest,
+    ProjectResponse,
+)
 from app.projects.service import (
     InvalidWorkspacePathError,
     ProjectOnboardingError,
@@ -26,6 +34,8 @@ from app.projects.storage import (
     ProjectNotFoundError,
 )
 from app.retrieval.schemas import SearchRequest, SearchResponse
+from app.watcher.dependencies import get_watcher_storage
+from app.watcher.storage import SqliteTelemetryStore
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -48,6 +58,51 @@ def register_project(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except (InvalidWorkspacePathError, ProjectOnboardingError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.post(
+    "/github",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Atomically onboard and index a public GitHub repository",
+)
+def register_github_project(
+    payload: GitHubProjectRegisterRequest,
+    service: ProjectService = Depends(get_project_service),
+) -> ProjectResponse:
+    """Clone a public GitHub repository into a managed workspace and index project."""
+    try:
+        project = service.register_github_project(payload)
+        return ProjectResponse.model_validate(project)
+    except (DuplicateProjectIdError, DuplicateWorkspacePathError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except (GitArgumentSecurityError, GitURLSecurityError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
+    except (InvalidWorkspacePathError, ProjectOnboardingError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@router.get(
+    "/{project_id}/readiness",
+    response_model=ProjectReadinessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get project operational readiness and connection recency",
+)
+def get_project_readiness(
+    project_id: str,
+    service: ProjectService = Depends(get_project_service),
+    connector_store: SqliteConnectorStore = Depends(get_connector_store),
+    telemetry_store: SqliteTelemetryStore = Depends(get_watcher_storage),
+) -> ProjectReadinessResponse:
+    """Retrieve operational readiness across source, connectors, health, and telemetry."""
+    try:
+        return service.get_project_readiness(
+            project_id=project_id,
+            connector_store=connector_store,
+            telemetry_store=telemetry_store,
+        )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @router.get(

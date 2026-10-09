@@ -1119,6 +1119,10 @@ Daily/weekly reports, trends, recovery metrics, repeated incidents, historical o
 
 Authentication, authorization, secrets, encryption, retention, permissions, rate limits, packaging, Docker/releases/installers and production hardening.
 
+## Stage 21 — End-to-End Application Onboarding & Connection Flow
+
+Complete first-time user onboarding journey: local and public GitHub repository connection, deterministic project ID derivation, concurrency-safe workspace allocation, one-time raw webhook secret delivery with subsequent masking, operational connection readiness monitoring (`/readiness`), Windows Control Center 4-step onboarding wizard, and Android WorkManager best-effort background alert polling.
+
 ---
 
 # 29. Stage 10 — Frozen Scope
