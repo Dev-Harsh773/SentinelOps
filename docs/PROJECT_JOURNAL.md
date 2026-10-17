@@ -1940,3 +1940,200 @@ Close the operational and experiential gap between core platform capabilities an
 
 ### User Approval
 User Approval: Approved
+
+---
+
+## Stage 22 — Production-Like End-to-End Validation
+
+### Objective
+Provide comprehensive production-like validation of SentinelOps against an independent, deployed, deliberately breakable cloud application (`SentinelOpsChaosDemo`). Validate the full operational lifecycle:
+1. External application source hosted on GitHub;
+2. External application deployed publicly / independently;
+3. Onboarding into SentinelOps via GitHub clone and code indexing;
+4. Dual connector integration: synthetic health poller + authenticated webhook telemetry;
+5. Normal operations verification (`GET /health` -> 200, `POST /orders` -> 201);
+6. Controlled failure simulations (runtime `OrderProcessingError` exception telemetry and 503 health outage);
+7. Automatic HIGH incident creation and correlation;
+8. Evidence investigation linking runtime stack trace directly to GitHub source code and Git metadata;
+9. Multi-client visibility across Windows Control Center desktop and Android mobile application.
+
+### Design Decisions
+- **Canonical Health Event Alignment**: Fixed poller normalization in `app/connectors/normalizer.py` so poller probe errors emit the canonical SentinelOps contract:
+  - `signal_type = "health"`
+  - `level = "ERROR"`
+  - `event_type = "health_check_failed"`
+  This matches the built-in `HealthCheckFailureRule`, creating automatic HIGH incidents on poller failures without modifying detection rules or introducing non-standard signal types.
+- **Restricted Validation Ingress Gateway (`tools/validation_gateway/`)**:
+  - Exclusively permits `POST /connectors/{connector_id}/ingest` for incoming webhook telemetry.
+  - Rejects all other methods (HTTP 405) and paths (HTTP 404).
+  - Caps request body size at 1 MB (HTTP 413).
+  - Forwards strictly to fixed upstream SentinelOps backend `http://127.0.0.1:8000` (rejects arbitrary upstreams).
+  - Preserves authentication headers (`X-Sentinel-Secret`, `Content-Type`, `X-Request-ID`).
+  - Redacts/omits secret headers from all proxy logs.
+  - Formally isolated as development/validation infrastructure, clearly separated from future production ingress architecture.
+- **Independent Chaos Demo Application (`D:\SentinelOpsChaosDemo`)**:
+  - Independent Git repository and standalone Python service.
+  - Domain endpoints: `GET /health`, `GET /products`, `GET /products/{id}`, `POST /orders` (HTTP 201 Created on success), `GET /orders/{id}`.
+  - Admin failure controls: `POST /admin/failures/order-processing`, `POST /admin/failures/health-outage`, `GET /admin/failures` (authenticated via `X-Admin-Token`).
+  - Controlled chaos handling: `OrderProcessingError` exception handler captures full stack trace, fires non-blocking background telemetry to SentinelOps connector ingest endpoint (`signal_type="log"`, `level="ERROR"`, `event_type="order.processing.failed"`, `exception_type="OrderProcessingError"`), and returns HTTP 500.
+  - Cloud deployment configuration: includes `Procfile`, `render.yaml`, `requirements.txt`, and comprehensive `README.md`.
+
+### Files Added / Changed
+- **SentinelOps Core**:
+  - `app/connectors/normalizer.py`: Updated `normalize_poller_result` to emit canonical `event_type = "health_check_failed"` on error and `"health_check_passed"` on success.
+  - `tests/test_connectors_api.py`: Added focused regression test `test_http_poller_503_triggers_health_check_failed_high_incident`.
+- **Validation Ingress Gateway**:
+  - `tools/validation_gateway/gateway.py`: FastAPI restricted ingress proxy with 1 MB cap, path validation, and fixed upstream forwarding.
+  - `tools/validation_gateway/run_gateway.py`: CLI runner for launching validation gateway on port 8080.
+  - `tools/validation_gateway/test_gateway.py`: Focused unit tests verifying path filtering, method rejection, body limits, header forwarding, and log security.
+- **External Chaos Application (`D:\SentinelOpsChaosDemo`)**:
+  - `app/main.py`: FastAPI application with `OrderProcessingError` exception handler and async telemetry dispatch.
+  - `app/config.py`: Configuration settings (`SENTINELOPS_WEBHOOK_URL`, `SENTINELOPS_WEBHOOK_SECRET`, `CHAOS_ADMIN_TOKEN`); Render's process command consumes `PORT`.
+  - `app/exceptions.py`: Custom exception `OrderProcessingError`.
+  - `app/models.py`: Schemas for products, orders, and chaos controls.
+  - `app/state.py`: In-memory state and toggle flags.
+  - `app/telemetry.py`: Asynchronous webhook client forwarding events to SentinelOps.
+  - `app/api/health.py`: Health endpoint (`/health`) with toggleable 503 outage.
+  - `app/api/products.py`: Product catalog endpoints (`/products`).
+  - `app/api/orders.py`: Order checkout endpoints (`/orders`).
+  - `app/api/admin.py`: Admin chaos control endpoints (`/admin/failures`).
+  - `tests/test_health.py`: Tests for health normal and outage behavior.
+  - `tests/test_products.py`: Tests for catalog endpoints.
+  - `tests/test_orders.py`: Tests for order success (201) and simulated failure (500).
+  - `tests/test_admin.py`: Tests for admin authentication and toggle switching.
+  - `tests/test_telemetry.py`: Tests for telemetry formatting and non-blocking dispatch.
+  - `render.yaml`: Cloud deployment manifest for Render.
+  - `Procfile`: Process file for cloud web worker.
+  - `requirements.txt`: Python package requirements.
+  - `README.md`: End-to-end setup, deployment, and chaos simulation instructions.
+  - `.gitignore`: Standard Python and virtualenv ignore rules.
+- **Documentation & Roadmap**:
+  - `project.md`: Added Stage 22 section.
+  - `docs/PROJECT_JOURNAL.md`: Recorded Stage 22 design, architecture, and verification results.
+
+### Verification
+- **Automated Test Results**:
+  - SentinelOps full regression suite: **513 passed** in 157.85s (100% pass rate).
+  - SentinelOps desktop suite (`tests/desktop`): **76 passed** in 3.55s.
+  - Validation Gateway suite (`tools/validation_gateway/test_gateway.py`): **7 passed** in 0.92s.
+  - Chaos Demo suite (`D:\SentinelOpsChaosDemo\tests`): **19 passed** in 1.50s.
+  - Android unit test suite (`.\gradlew.bat testDebugUnitTest`): **BUILD SUCCESSFUL** (all 32 JVM tests passing).
+  - Whitespace & format check: `git diff --check` clean.
+
+### User Approval
+User Approval: Pending Verification
+
+
+### Stage 22 follow-up verification ? 2026-10-17
+
+Status remains **Pending Verification**. Detailed evidence, file-by-file changes,
+commands, and outstanding gates are in [STAGE22_VERIFICATION.md](STAGE22_VERIFICATION.md).
+
+- Confirmed the existing architecture, both Git histories, real SQLite IDs, and
+  mock-provider configuration before focused changes. No commit or push.
+- Fixed mock remediation selecting the highest retrieval-ranked handler rather
+  than a uniquely identified RCA symbol. New real persisted proposal targets
+  `create_order`, with the selected source chunk cited correctly.
+- Preserved optional webhook request/trace IDs and traceback, canonical HTTP
+  status in evidence metadata, and legacy endpoint/external-event fallbacks.
+  Updated the separate chaos producer to emit endpoint/status/request ID.
+- Fixed duplicate automatic health-poller creation with project/config/status
+  reuse under an SQLite transaction. Explicit IDs retain existing semantics.
+  Two identical existing Stage 22 pollers were disabled through the service,
+  preserving connector and incident history.
+- Hardened gateway factory upstream validation and incremental body-size checks;
+  exception logging no longer includes arbitrary exception text.
+- Fixed connector API test watcher-storage isolation. No safety boundaries changed.
+- Health duplicate suppression is intentional documented Stage 12 behavior; no
+  broad evidence-correlation change. Desktop Investigate changes lifecycle status
+  only and does not start RCA, so no inaccurate running-state message was added.
+- Final regression: **445 backend/demo + 76 desktop = 521 Python**, **9 gateway**,
+  **19 chaos-demo**, **32 Android JVM** tests passed. Android required the configured
+  JDK 17 after the incomplete Android Studio JBR failed to launch. Both repositories
+  passed `git diff --check`.
+- Graceful backend process restart preserved project, connector definitions,
+  incident, evidence, investigation, original/new remediation, historical memory,
+  SafeAction, all five audits, and report. Two fresh offscreen desktop processes
+  loaded real persisted state; the rendered report was visually inspected.
+- Real local HTTP validation passed: updated chaos app -> gateway -> authenticated
+  webhook -> HIGH incident with rich evidence -> source-grounded mock investigation
+  -> historical memory -> remediation -> report. Chaos reset and incident resolved.
+- Public deployed health/products returned 200; normal order returned 201. Recovered
+  health-test incident resolved. Historical public failure validation is retained
+  as historical evidence, not misrepresented as freshly rerun after deployment.
+- TEST_CONNECTOR's approved successful lifecycle/audit survived restart.
+  RETRY_NOTIFICATION **NOT EXERCISED**: zero notifications for the Stage 22 project.
+- No Android device/emulator attached. WorkManager remains best-effort polling.
+  Managed Git clone remains shallow. No live OpenAI reasoning was exercised.
+- No Cloudflare tunnel was running or started. Temporary local gateway/chaos
+  processes stopped; backend validation used loopback only. Quick Tunnel remains
+  validation tooling, not production architecture.
+- Outstanding: Render admin-token rotation and deployment/public verification of
+  the updated chaos payload. Browser inventory remained empty despite the user's
+  intent to connect their signed-in session. Interactive desktop reopening is not
+  claimed; offscreen integration is the observed scope.
+
+User Approval: Pending Verification
+
+
+### Stage 22 browser connection follow-up ? 2026-10-17
+
+- Chrome extension connection now works; signed-in Render access verified.
+- Chaos service `srv-db5010tckfvc738fgv9g` is live on `e7df86c`.
+- Opened Environment with all values masked. Token entry/save handed to the user
+  under browser-control credential rules; rotation is not yet confirmed.
+- Chaos payload changes are still uncommitted. Requested user commit/push of the
+  three reviewed chaos files; no agent commit, push, or deployment was performed.
+- Stage 22 remains Pending Verification.
+
+
+### Stage 22 rotation confirmation ? 2026-10-17
+
+- User confirmed admin-token rotation and completed deployment. Recorded as user-attested; no secret was inspected.
+- Local chaos repository still has the three reviewed files modified on `e7df86c`; user requested exact commit/push commands. Updated-payload deployment remains pending.
+- Chrome is connected, but the previous Render tab is no longer open.
+- Stage 22 remains Pending Verification.
+
+
+### Stage 22 final validation - 2026-10-18
+
+**Final status: APPROVED.** This entry supersedes the earlier Pending Verification
+follow-ups. Stage 23 was not started; SentinelOps remains unstaged/uncommitted/unpushed.
+
+- Render independently showed Live commit `af6f9b61c3eb4c949d9f02ac1201e68667fa0488`,
+  final environment deployment `dep-db9o9o6uverc738qtl7g`. Chaos repo clean and remote
+  main synchronized. Current user-rotated token authenticated protected controls;
+  no secret was printed. No negative test of the retired token is claimed.
+- Fresh tunnel exposed only gateway 8080; public `/projects` rejected with 404.
+  Render webhook destination was updated and verified before the single live 500.
+- Live incident `f90bdf42-1c6a-4dd7-825e-71dabc79f67c`, request
+  `c88d2532-ae9a-4a98-8e6c-fcd99c5ad958`: ERROR/order.processing.failed,
+  OrderProcessingError, /orders, HTTP 500, request ID and Render traceback survived
+  normalization, watcher persistence and incident evidence. Trace ID is null.
+- Mock investigation valid; controlled flag in create_order identified. Validated
+  remediation targets sentinelops-chaos-demo/app/api/orders.py:create_order and
+  cites its source chunk plus the real runtime evidence. Report rendered.
+- Actual desktop inspection found an additional defect: legacy DTO names caused
+  canonical ERROR evidence to display INFO and drop context. Fixed canonical field
+  mapping with legacy fallbacks and rendered HTTP/exception/traceback context.
+  Added two regressions; native reopened UI verified all required artifact tabs.
+- Graceful backend restart preserved project/connectors, resolved live incident,
+  evidence, investigation, remediation, report, memory and successful TEST_CONNECTOR
+  with its five original audits. No additional approval/action was fabricated.
+- Two repeated identical health definitions reused conn-7815d6d9. Atomic concurrency
+  and distinct-definition regression tests pass. Two historical duplicates remain
+  disabled; separate project registration retains its own monitor.
+- RETRY_NOTIFICATION NOT EXERCISED: zero Stage 22 notifications, no eligible failure.
+- Final matrix: backend 445, desktop 78, gateway 9, chaos 19, Android JVM 32 passed;
+  both git diff --check checks passed. Commands are in the final verification report.
+- Cleanup: chaos reset; final health/products 200 and normal order 201. New incident
+  and recovered old health incident resolved. No validation listeners/processes or
+  temporary tunnel remain. Render's last temporary URL needs replacement next run.
+- Limitations: deterministic mock AI, advisory remediation, shallow clone at e7df86c
+  (orders.py verified unchanged at deployed commit), older indexed handler, temporary
+  tunnel/free-instance sleep, best-effort Android WorkManager; no new device smoke
+  test. Root-cause inference is not a causal Git-change claim.
+- Reviewed source/tests/gateway and unstaged files. Actual connector-secret scan
+  found no secret in changed/untracked files. Local evidence artifacts remain ignored.
+
+Recommended manual commit: `Harden Stage 22 telemetry, desktop evidence, and validation ingress`.

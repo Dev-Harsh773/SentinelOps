@@ -52,6 +52,35 @@ from app.telemetry.models import Evidence, EvidenceType
 # Fixtures & Setup Helpers
 # =====================================================================
 
+@pytest.mark.parametrize("location", ["create_order", "app.api.orders.create_order", "app/api/orders.py:create_order"])
+def test_mock_remediation_prefers_rca_location_over_handler(location):
+    incident, investigation, evidence = setup_verified_incident_and_investigation(
+        target_file="app/api/orders.py", symbol_name="create_order"
+    )
+    investigation.rca.failure_location = location
+    investigation.code_results.insert(0, {
+        "id": "handler", "file_path": "app/main.py",
+        "symbol_name": "handle_order_processing_error", "content": "return error_response()",
+    })
+    proposal = FakeRemediationLLM().propose_remediation(
+        incident, investigation, [evidence], investigation.code_results, [], []
+    )
+    assert proposal.target_files == ["app/api/orders.py"]
+    assert proposal.target_symbols == ["create_order"]
+    assert [r.id for r in proposal.evidence_references if r.type == "code"] == ["chunk-rem-1"]
+    assert investigation.code_results[0]["id"] == "handler"
+
+
+def test_mock_remediation_keeps_retrieval_order_for_ambiguous_rca_symbol():
+    incident, investigation, evidence = setup_verified_incident_and_investigation(symbol_name="create_order")
+    investigation.code_results.insert(0, {
+        "id": "other", "file_path": "other/orders.py", "symbol_name": "create_order", "content": "pass",
+    })
+    proposal = FakeRemediationLLM().propose_remediation(
+        incident, investigation, [evidence], investigation.code_results, [], []
+    )
+    assert proposal.target_files == ["other/orders.py"]
+
 
 @pytest.fixture(autouse=True)
 def clean_repositories(tmp_path):

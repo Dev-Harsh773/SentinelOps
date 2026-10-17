@@ -77,6 +77,46 @@ def _init_project(project_store: SqliteProjectStore, project_id: str = "proj-ser
     project_store.create_project(proj)
 
 
+def test_poller_reuse_is_atomic_across_store_instances(project_store, test_db_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.connectors.models import Connector
+    _init_project(project_store)
+    barrier = Barrier(2)
+    now = datetime.now(timezone.utc)
+    def create(index):
+        store = SqliteConnectorStore(test_db_path)
+        try:
+            barrier.wait(timeout=10)
+            return store.create_or_reuse_poller(Connector(
+                connector_id=f"concurrent-{index}", project_id="proj-service", name="Health",
+                connector_type=ConnectorType.HTTP_POLLER,
+                config=ConnectorConfig(url="https://example.com/health"),
+                created_at=now, updated_at=now,
+            )).connector_id
+        finally:
+            store.close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ids = list(pool.map(create, range(2)))
+    assert ids[0] == ids[1]
+
+
+@pytest.mark.asyncio
+async def test_poller_reuse_preserves_project_and_configuration_boundaries(project_store, connector_service):
+    _init_project(project_store, "one")
+    _init_project(project_store, "two")
+    ids = []
+    for project, interval, state in [("one", 60, "active"), ("two", 60, "active"),
+                                     ("one", 120, "active"), ("one", 60, "disabled")]:
+        result = await connector_service.create_connector(ConnectorCreateRequest(
+            project_id=project, name="Health", connector_type=ConnectorType.HTTP_POLLER,
+            config=ConnectorConfig(url="https://example.com/health", poll_interval_seconds=interval),
+            status=state,
+        ))
+        ids.append(result.connector_id)
+    assert len(set(ids)) == 4
+
+
 @pytest.mark.asyncio
 async def test_option_b_deduplication_flow(
     project_store: SqliteProjectStore,

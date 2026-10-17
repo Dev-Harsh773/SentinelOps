@@ -162,6 +162,26 @@ class SqliteConnectorStore:
             last_target_error=row["last_target_error"],
         )
 
+    def create_or_reuse_poller(self, connector: Connector) -> Connector:
+        """Atomically reuse an identical poller definition within a project.
+
+        Names are presentation only. Configuration and status must match exactly;
+        explicit connector IDs continue to use the normal creation contract.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for existing in self.list_connectors(connector.project_id):
+                    if (existing.connector_type == ConnectorType.HTTP_POLLER
+                            and existing.config == connector.config
+                            and existing.status == connector.status):
+                        self._conn.commit()
+                        return existing
+                return self.create_connector(connector)
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def create_connector(self, connector: Connector) -> Connector:
         """Insert a new connector and initialize its health record."""
         with self._lock:

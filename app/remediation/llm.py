@@ -120,6 +120,16 @@ class FakeRemediationLLM:
 
         if code_chunks:
             top_chunk = code_chunks[0]
+            # Retrieval relevance is not causal relevance. Prefer a uniquely
+            # identified RCA symbol, retaining retrieval order if ambiguous.
+            location = (rca.failure_location or "").strip().replace("\\", "/")
+            matches = [c for c in code_chunks if c.get("symbol_name") and (
+                location == c["symbol_name"]
+                or location.endswith("." + c["symbol_name"])
+                or location == f"{c.get('file_path', '')}:{c['symbol_name']}"
+            )]
+            if len(matches) == 1:
+                top_chunk = matches[0]
             fp = top_chunk.get("file_path", "app/main.py")
             sym = top_chunk.get("symbol_name") or rca.failure_location or None
             target_files.append(fp)
@@ -173,12 +183,12 @@ class FakeRemediationLLM:
                     description=f"Runtime error log for event '{runtime_evidence[0].event}'",
                 )
             )
-        if code_chunks and code_chunks[0].get("id"):
+        if code_chunks and top_chunk.get("id"):
             evidence_refs.append(
                 EvidenceReference(
                     type="code",
-                    id=code_chunks[0]["id"],
-                    description=f"Source code chunk in {code_chunks[0].get('file_path')}",
+                    id=top_chunk["id"],
+                    description=f"Source code chunk in {top_chunk.get('file_path')}",
                 )
             )
 

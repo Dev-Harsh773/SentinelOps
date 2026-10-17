@@ -130,6 +130,9 @@ class WebhookIngestRequest(BaseModel):
     """Flexible webhook ingestion payload mapping to canonical TelemetryEvent."""
 
     external_event_id: Optional[str] = None
+    request_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    traceback: Optional[str] = None
     signal_type: Optional[str] = None
     level: Optional[str] = "INFO"
     event_type: Optional[str] = "webhook.event"

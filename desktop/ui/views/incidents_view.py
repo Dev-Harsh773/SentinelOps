@@ -640,6 +640,11 @@ class IncidentsView(QWidget):
             lines.append(f"[{i}] {e.log_level} | Signal: {e.signal_type} | Source: {e.source_file}")
             if e.request_id:
                 lines.append(f"    Request ID: {e.request_id}")
+            for key, label in (("event", "Event"), ("endpoint", "Endpoint"),
+                               ("status_code", "HTTP Status"), ("exception_type", "Exception"),
+                               ("trace_id", "Trace ID"), ("traceback", "Traceback")):
+                if e.attributes.get(key) is not None:
+                    lines.append(f"    {label}: {e.attributes[key]}")
             lines.append(f"    Message: {e.message}\n")
         self.evidence_text.setPlainText("\n".join(lines))
 

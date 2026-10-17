@@ -36,6 +36,11 @@ def normalize_webhook_payload(
     level = (request.level or "INFO").upper()
 
     metadata = dict(request.metadata or {})
+    if request.traceback:
+        metadata["traceback"] = request.traceback
+    if request.status_code is not None:
+        # Evidence stores HTTP context in metadata rather than a separate column.
+        metadata["status_code"] = request.status_code
     if request.payload:
         metadata["payload"] = request.payload
     metadata["connector_id"] = connector.connector_id
@@ -58,9 +63,9 @@ def normalize_webhook_payload(
         level=level,
         event_type=request.event_type or "webhook.event",
         message=redact_secrets(request.message or "Webhook event received"),
-        request_id=request.external_event_id,
-        trace_id=None,
-        endpoint=request.endpoint,
+        request_id=request.request_id or request.external_event_id,
+        trace_id=request.trace_id,
+        endpoint=request.endpoint or (metadata.get("path") if isinstance(metadata.get("path"), str) else None),
         status_code=request.status_code,
         exception_type=request.exception_type,
         metadata=clean_metadata,
@@ -80,7 +85,7 @@ def normalize_poller_result(
     event_id = f"evt-{uuid.uuid4().hex[:12]}"
 
     level = "ERROR" if is_error else "INFO"
-    event_type = "health.check.failure" if is_error else "health.check.success"
+    event_type = "health_check_failed" if is_error else "health_check_passed"
     message = error_message or f"HTTP Poller probe returned status {status_code}"
 
     meta = {

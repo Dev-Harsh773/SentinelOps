@@ -106,7 +106,12 @@ class ConnectorService:
             updated_at=now,
         )
 
-        created = self._store.create_connector(connector)
+        if request.connector_type == ConnectorType.HTTP_POLLER and request.connector_id is None:
+            created = self._store.create_or_reuse_poller(connector)
+            if created.connector_id != connector_id:
+                return ConnectorCreateResponse(**self.get_connector(created.connector_id).model_dump())
+        else:
+            created = self._store.create_connector(connector)
         health = self._store.get_health(connector_id)
 
         if self._runtime and connector.connector_type == ConnectorType.HTTP_POLLER and connector.status == ConnectorStatus.ACTIVE:

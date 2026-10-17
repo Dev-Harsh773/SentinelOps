@@ -3,6 +3,7 @@
 import pytest
 import httpx
 
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFrame, QInputDialog, QLabel
 
@@ -1505,6 +1506,21 @@ def test_repeated_refresh_clicks_do_not_flash_cross_project_rows(qapp):
             item = view.table.item(row, 2)
             assert item.data(Qt.ItemDataRole.UserRole) != "inc-demo-flash"
 
-
-
-
+def test_canonical_evidence_display_preserves_error_and_http_context(qapp):
+    from desktop.api.models import EvidenceDTO
+    from desktop.ui.views.incidents_view import IncidentsView
+    from unittest.mock import MagicMock
+    view = IncidentsView(client=MagicMock(), task_runner=MagicMock())
+    view._render_evidence([EvidenceDTO.from_dict({
+        "id": "e-1", "incident_id": "i-1", "level": "ERROR", "source": "watcher-log",
+        "type": "runtime_log", "event": "order.processing.failed", "endpoint": "/orders",
+        "exception_type": "OrderProcessingError", "request_id": "request-live",
+        "message": "Checkout failed", "metadata": {"status_code": 500,
+        "traceback": "create_order raised OrderProcessingError"},
+    })])
+    rendered = view.evidence_text.toPlainText()
+    for expected in ("ERROR", "watcher-log", "order.processing.failed", "/orders",
+                     "HTTP Status: 500", "OrderProcessingError", "request-live", "create_order"):
+        assert expected in rendered
+    assert "INFO" not in rendered
+    view.close()

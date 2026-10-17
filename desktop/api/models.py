@@ -147,16 +147,21 @@ class EvidenceDTO:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "EvidenceDTO":
+        attributes = dict(data.get("metadata") or {})
+        attributes.update(data.get("attributes") or {})
+        for key in ("event", "endpoint", "exception_type", "trace_id"):
+            if data.get(key) is not None:
+                attributes[key] = data[key]
         return cls(
-            evidence_id=str(data.get("evidence_id", "")),
+            evidence_id=str(data.get("id", data.get("evidence_id", ""))),
             incident_id=str(data.get("incident_id", "")),
-            signal_type=str(data.get("signal_type", "LOG")),
+            signal_type=str(data.get("type", data.get("signal_type", "LOG"))),
             timestamp=_parse_datetime(data.get("timestamp")),
-            log_level=str(data.get("log_level", "INFO")),
+            log_level=str(data.get("level", data.get("log_level", "INFO"))),
             message=str(data.get("message", "")),
-            source_file=str(data.get("source_file", "")),
+            source_file=str(data.get("source", data.get("source_file", ""))),
             request_id=data.get("request_id"),
-            attributes=dict(data.get("attributes", {})),
+            attributes=attributes,
         )
 
 

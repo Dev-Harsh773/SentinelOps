@@ -2,17 +2,18 @@
 
 ## 1. Project Status
 
-SentinelOps is complete and manually approved through **Stage 9**.
+SentinelOps is implemented and manually approved through **Stage 21**.
 
 Current confirmed repository state:
 
 - Active branch: `main`
-- Latest confirmed commit: `1f03a81`
-- `main` and `origin/main` were aligned at that point
-- Full Stage 9 regression: **195 tests passed**
-- Stage 9-specific suite: **30 tests passed**
-- Stage 10 has **not** been implemented
-- The previous Stage 10 direction focused too heavily on automated code patch execution and is now obsolete
+- Latest local commit: `1dcc50a` (Stage 21 onboarding)
+- Stage 22 is **APPROVED** after live validation on 2026-10-17 and final review on 2026-10-18
+- Regression: **445 backend/demo + 78 desktop = 523 Python tests**, **9 gateway**, **19 chaos-demo**, **32 Android JVM tests** passed
+- Render commit `af6f9b61c3eb4c949d9f02ac1201e68667fa0488` verified Live; rich telemetry, source-grounded mock investigation, remediation, report, desktop reopening, and restart persistence passed
+- Current rotated admin token authenticated successfully; chaos recovered and temporary validation services/tunnel stopped
+- SentinelOps remains uncommitted/unpushed for the user's manual review and Git actions; Stage 23 has not started
+- See `docs/STAGE22_VERIFICATION.md` for exact evidence, commands, cleanup, and limitations
 
 This document replaces the older roadmap and is the current architectural source of truth.
 
@@ -1123,6 +1124,10 @@ Authentication, authorization, secrets, encryption, retention, permissions, rate
 
 Complete first-time user onboarding journey: local and public GitHub repository connection, deterministic project ID derivation, concurrency-safe workspace allocation, one-time raw webhook secret delivery with subsequent masking, operational connection readiness monitoring (`/readiness`), Windows Control Center 4-step onboarding wizard, and Android WorkManager best-effort background alert polling.
 
+## Stage 22 — Production-Like End-to-End Validation
+
+Validation stage demonstrating SentinelOps against a separately hosted, deliberately breakable cloud application (`SentinelOpsChaosDemo`). Proves GitHub source indexing, remote deployment connection (Health Poller + Authenticated Webhook Telemetry), controlled failure simulation (`OrderProcessingError` exception telemetry and 503 health outage), automated HIGH incident creation with correlated code/traceback/git evidence, and cross-client visibility (Windows Control Center and Android mobile client). Features restricted validation ingress gateway (`tools/validation_gateway/`) and canonical health event normalization.
+
 ---
 
 # 29. Stage 10 — Frozen Scope
@@ -1541,6 +1546,14 @@ Code and tests remain the source of truth for exact implemented interfaces.
 ---
 
 # 37. Current Next Action
+
+Stage 22 is **APPROVED**. Review the final uncommitted diff and
+`docs/STAGE22_VERIFICATION.md`, then perform the manual commit and push.
+The agent has not committed or pushed SentinelOps. Do not start Stage 23 without
+a separate user instruction.
+
+The Stage 10 planning instructions below are retained as historical roadmap context;
+they are superseded by the current Stage 22 status and project journal.
 
 The architecture in this document is now considered frozen enough to continue development.
 

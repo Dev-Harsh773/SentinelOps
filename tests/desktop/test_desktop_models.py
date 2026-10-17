@@ -23,6 +23,27 @@ from desktop.api.models import (
 )
 
 
+def test_evidence_dto_preserves_canonical_api_context_and_legacy_fields():
+    dto = EvidenceDTO.from_dict({
+        "id": "e-live", "incident_id": "i-live", "type": "runtime_log",
+        "level": "ERROR", "source": "watcher-log", "event": "order.processing.failed",
+        "endpoint": "/orders", "exception_type": "OrderProcessingError",
+        "request_id": "request-1", "trace_id": "trace-1",
+        "metadata": {"status_code": 500, "traceback": "create_order raised OrderProcessingError"},
+    })
+    assert (dto.evidence_id, dto.log_level, dto.source_file) == ("e-live", "ERROR", "watcher-log")
+    assert dto.signal_type == "runtime_log"
+    assert dto.attributes["status_code"] == 500
+    assert dto.attributes["endpoint"] == "/orders"
+    assert dto.attributes["event"] == "order.processing.failed"
+    assert dto.attributes["trace_id"] == "trace-1"
+    assert "create_order" in dto.attributes["traceback"]
+    legacy = EvidenceDTO.from_dict({"evidence_id": "old", "log_level": "WARN",
+                                    "source_file": "old.py", "attributes": {"legacy": True}})
+    assert (legacy.evidence_id, legacy.log_level, legacy.source_file) == ("old", "WARN", "old.py")
+    assert legacy.attributes == {"legacy": True}
+
+
 def test_project_dto_from_dict():
     raw = {
         "project_id": "proj-1",

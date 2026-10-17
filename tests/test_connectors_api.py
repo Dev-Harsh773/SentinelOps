@@ -42,7 +42,7 @@ from app.projects.dependencies import (
     set_custom_project_db_path,
 )
 from app.telemetry.dependencies import get_evidence_repository
-from app.watcher.dependencies import reset_watcher_state
+from app.watcher.dependencies import reset_watcher_state, set_custom_watcher_db_path
 
 client = TestClient(app)
 
@@ -56,6 +56,7 @@ def isolated_test_environment(tmp_path: Path) -> Generator[None, None, None]:
     set_custom_project_db_path(test_db)
     set_custom_connector_db_path(test_db)
     set_custom_incident_db_path(test_db)
+    set_custom_watcher_db_path(test_db)
 
     app.dependency_overrides.clear()
     reset_project_state()
@@ -81,6 +82,8 @@ def isolated_test_environment(tmp_path: Path) -> Generator[None, None, None]:
     set_custom_incident_db_path(None)
     set_custom_project_db_path(None)
     set_custom_connector_db_path(None)
+    reset_watcher_state()
+    set_custom_watcher_db_path(None)
 
 
 def _register_project(project_id: str, name: str, tmp_path: Path) -> dict:
@@ -111,6 +114,50 @@ def test_connector_create_unknown_project_returns_404() -> None:
     )
     assert resp.status_code == 404
     assert "not found" in resp.json()["detail"].lower()
+
+
+def test_webhook_rich_context_reaches_persisted_evidence(tmp_path):
+    _register_project("rich-context", "Rich Context", tmp_path)
+    response = client.post("/connectors", json={
+        "project_id": "rich-context", "name": "Webhook", "connector_type": "webhook", "config": {},
+    })
+    cid = response.json()["connector_id"]
+    payload = {
+        "signal_type": "log", "level": "ERROR", "event_type": "order.processing.failed",
+        "exception_type": "OrderProcessingError", "endpoint": "/orders", "status_code": 500,
+        "request_id": "request-1", "trace_id": "trace-1", "external_event_id": "delivery-1",
+        "traceback": "create_order raised OrderProcessingError; Bearer abcdefgh12345",
+        "metadata": {"path": "/legacy-path", "auth_secret": "must-not-persist"},
+    }
+    result = client.post(f"/connectors/{cid}/ingest", json=payload)
+    assert result.status_code == 200
+    from app.watcher.dependencies import get_watcher_storage
+    events = get_watcher_storage().query(limit=10, project_id="rich-context")
+    event = next(e for e in events if e.event_id == result.json()["event_id"])
+    assert (event.endpoint, event.status_code, event.request_id, event.trace_id) == ("/orders", 500, "request-1", "trace-1")
+    incident = get_incident_repository().list_all(project_id="rich-context")[0]
+    evidence = get_evidence_repository().list_for_incident(incident.id)[0]
+    assert evidence.endpoint == "/orders"
+    assert evidence.metadata["status_code"] == 500
+    assert "create_order" in evidence.metadata["traceback"]
+    assert "abcdefgh12345" not in evidence.metadata["traceback"]
+    assert evidence.metadata["auth_secret"] == "[REDACTED]"
+    assert client.post(f"/connectors/{cid}/ingest", json=payload).json()["status"] == "duplicate_suppressed"
+
+
+def test_identical_automatic_pollers_reused_but_explicit_ids_preserved(tmp_path):
+    _register_project("poller-reuse", "Poller Reuse", tmp_path)
+    payload = {"project_id": "poller-reuse", "name": "Health", "connector_type": "http_poller",
+               "config": {"url": "https://example.com/health"}}
+    first = client.post("/connectors", json=payload).json()
+    payload["name"] = "Renamed display label"
+    second = client.post("/connectors", json=payload).json()
+    assert first["connector_id"] == second["connector_id"]
+    assert second["raw_auth_secret"] is None
+    payload["connector_id"] = "explicit-poller"
+    assert client.post("/connectors", json=payload).status_code == 201
+    assert client.post("/connectors", json=payload).status_code == 409
+    assert len(client.get("/connectors?project_id=poller-reuse").json()) == 2
 
 
 def test_connector_crud_api_lifecycle(tmp_path: Path) -> None:
@@ -589,4 +636,69 @@ async def test_async_api_http_poller_lifecycle_with_running_loop(tmp_path: Path)
             assert "conn-live-poller" not in runtime._tasks
 
 
+@pytest.mark.asyncio
+async def test_http_poller_503_triggers_health_check_failed_high_incident(tmp_path: Path):
+    """Prove HTTP 503 poller response emits canonical health_check_failed event,
 
+    triggering HealthCheckFailureRule and automatically creating a HIGH incident.
+    """
+    from httpx import ASGITransport, AsyncClient, Response
+    from unittest.mock import patch
+    from app.connectors.dependencies import get_connector_runtime
+    from app.incidents.dependencies import get_incident_service
+
+    runtime = get_connector_runtime()
+    incident_service = get_incident_service()
+
+    # 1. Register project with existing workspace
+    _register_project("proj-poller-503-test", "Poller Test Project", tmp_path)
+
+    # 2. Register HTTP poller connector
+    res = client.post(
+        "/connectors",
+        json={
+            "connector_id": "conn-poller-503",
+            "project_id": "proj-poller-503-test",
+            "name": "Health Poller 503 Test",
+            "connector_type": "http_poller",
+            "config": {
+                "url": "http://127.0.0.1:8080/health",
+                "poll_interval_seconds": 60,
+                "expected_status_codes": [200],
+                "emit_health_telemetry": True,
+            },
+        },
+    )
+    assert res.status_code == 201
+
+    connector = runtime._store.get_connector("conn-poller-503")
+    assert connector is not None
+
+    # 3. Simulate remote server returning HTTP 503 Service Unavailable
+    mock_response = Response(
+        status_code=503,
+        text='{"status": "degraded", "error": "synthetic_health_failure"}',
+    )
+
+    from unittest.mock import AsyncMock, patch
+
+    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = mock_response
+        poll_result = await runtime.execute_single_poll(connector)
+        if poll_result.get("status") == "operational_error":
+            pytest.fail(f"Unexpected operational error: {poll_result.get('error')}")
+        assert poll_result["status"] == "target_failure"
+        assert poll_result["status_code"] == 503
+
+    # 4. Verify target status degraded in connector health
+    health = runtime._store.get_health("conn-poller-503")
+    assert health is not None
+    assert health.target_status.value == "unhealthy"
+
+    # 5. Verify detection rule evaluated event and created HIGH incident
+    incidents = incident_service.list_incidents(project_id="proj-poller-503-test")
+    assert len(incidents) >= 1
+    incident = incidents[0]
+    assert incident.project_id == "proj-poller-503-test"
+    assert incident.severity.value == "high"
+    assert "Health Check Failed" in incident.title
