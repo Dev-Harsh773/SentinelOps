@@ -132,18 +132,13 @@ public class NotificationAdapter extends RecyclerView.Adapter<NotificationAdapte
                 binding.btnMarkRead.setVisibility(View.GONE);
             }
 
-            // Retry Button: shown only if webhook failed
-            boolean canRetry = "webhook".equalsIgnoreCase(item.channel) && "failed".equalsIgnoreCase(item.deliveryStatus);
-            if (canRetry) {
-                binding.btnRetryNotification.setVisibility(View.VISIBLE);
-                binding.btnRetryNotification.setEnabled(isOnline && !isActionLoading);
-                binding.btnRetryNotification.setOnClickListener(v -> {
-                    if (actionListener != null && isOnline && !isActionLoading) {
-                        actionListener.onRetry(item);
-                    }
-                });
-            } else {
-                binding.btnRetryNotification.setVisibility(View.GONE);
+            // Delivery retry requires reviewed SafeAction approval in Control Center.
+            binding.btnRetryNotification.setVisibility(View.GONE);
+            if ("failed".equalsIgnoreCase(item.deliveryStatus)) {
+                binding.tvFailureReason.setVisibility(View.VISIBLE);
+                binding.tvFailureReason.setText("Delivery failed: " +
+                    (item.failureReason != null ? item.failureReason : "Unknown") +
+                    "\nReview and approve a retry in Windows Control Center.");
             }
         }
     }
