@@ -613,6 +613,11 @@ def test_full_stage18_failure_sequence_reproduction(isolated_db):
         assert res_b.status_code == 201
         incident_b_id = res_b.json()["id"]
 
+        # Bind seeded fixture targets to their actual incidents before policy evaluation.
+        with n_store._conn:
+            n_store._conn.execute("UPDATE notifications SET incident_id=? WHERE notification_id='notif-retry-1'", (incident_b_id,))
+            n_store._conn.execute("UPDATE notifications SET incident_id=? WHERE notification_id='notif-conflict-1'", (incident_a_id,))
+
     # Step 2: Restart app 1
     close_action_store()
     close_incident_repository()

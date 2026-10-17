@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone
 import logging
+import json
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
+from app.common.config import config
 from app.connectors.models import OperationalStatus
 from app.connectors.redaction import is_secret_masked, mask_secret, redact_secrets
 from app.incidents.models import Incident, IncidentStatus, Severity
@@ -59,10 +61,14 @@ class NotificationService:
         self._store = store
         self._project_store = project_store
         self._runtime = runtime
+        if runtime:
+            runtime.process_intents = self.process_pending_intents
 
     def set_runtime(self, runtime: NotificationDeliveryRuntime) -> None:
         """Bind delivery runtime after dependency assembly."""
         self._runtime = runtime
+        if runtime:
+            runtime.process_intents = self.process_pending_intents
 
     # -------------------------------------------------------------------------
     # Subscription Management
@@ -170,9 +176,46 @@ class NotificationService:
     # Lifecycle Observers (Event-Loop Safe)
     # -------------------------------------------------------------------------
 
+    def process_pending_intents(self):
+        """Replay committed incident intents; ack only after every destination is durable."""
+        for event in self._store.pending_intents():
+            data = json.loads(event["incident_json"])
+            data["severity"] = Severity(data["severity"])
+            data["status"] = IncidentStatus(data["status"])
+            for key in ("created_at", "updated_at"):
+                data[key] = datetime.fromisoformat(data[key])
+            incident = Incident(**data)
+            created = incident.status == IncidentStatus.OPEN
+            event_tag = 'created' if created else f'status_{incident.status.value}'
+            for sub in json.loads(event["subscriptions_json"]):
+                sub["channel"] = NotificationChannel(sub["channel"])
+                sub["destination_config"] = json.loads(sub["destination_config"])
+                if SEVERITY_ORDER[incident.severity] < SEVERITY_ORDER[Severity(sub["min_severity"])]:
+                    continue
+                # Subscription may have been removed; preserve the delivery snapshot/history.
+                try:
+                    self._store.get_subscription(sub["subscription_id"])
+                    subscription_exists = True
+                except SubscriptionNotFoundError:
+                    subscription_exists = False
+                n = self._build_incident_notification(incident, sub,
+                    NotificationType.INCIDENT_CREATED if created else NotificationType.INCIDENT_STATUS_CHANGED,
+                    f"Incident {'Created' if created else incident.status.value.title()}: {incident.title}", incident.summary,
+                    f"{incident.project_id}:incident:{incident.id}:{event_tag}:{sub['subscription_id']}",
+                    incident.updated_at)
+                if not subscription_exists:
+                    n.subscription_id = None
+                self._store.create_notification(n)
+            self._store.complete_intent(event["event_key"], datetime.now(timezone.utc))
+
     def on_incident_created(self, incident: Incident) -> None:
         """Synchronously evaluate subscriptions and persist notification records for a new incident."""
         try:
+            if self._store.has_incident_intent(incident.project_id, incident.id, "open"):
+                self.process_pending_intents()
+                if self._runtime:
+                    self._runtime.wake()
+                return
             subs = self._store.list_subscriptions(project_id=incident.project_id)
             inc_sev_level = SEVERITY_ORDER.get(incident.severity, 1)
 
@@ -220,6 +263,11 @@ class NotificationService:
             return
 
         try:
+            if self._store.has_incident_intent(incident.project_id, incident.id, new_status.value):
+                self.process_pending_intents()
+                if self._runtime:
+                    self._runtime.wake()
+                return
             subs = self._store.list_subscriptions(project_id=incident.project_id)
             inc_sev_level = SEVERITY_ORDER.get(incident.severity, 1)
 
@@ -346,6 +394,7 @@ class NotificationService:
                     ),
                     read_status=ReadStatus.UNREAD,
                     attempt_count=0,
+                    max_attempts=config.notification_max_attempts,
                     next_attempt_at=(
                         transition_time if sub["channel"] == NotificationChannel.WEBHOOK else None
                     ),
@@ -383,6 +432,7 @@ class NotificationService:
         delivery_status: Optional[DeliveryStatus] = None,
         limit: int = 50,
         offset: int = 0,
+        incident_id: Optional[str] = None,
     ) -> List[NotificationResponse]:
         """List notifications in feed.
         
@@ -391,6 +441,7 @@ class NotificationService:
         """
         records = self._store.list_notifications(
             project_id=project_id,
+            incident_id=incident_id,
             read_status=read_status,
             channel=channel,
             delivery_status=delivery_status,
@@ -398,6 +449,9 @@ class NotificationService:
             offset=offset,
         )
         return [self._to_notification_response(r) for r in records]
+
+    def list_attempts(self, notification_id):
+        return self._store.list_attempts(notification_id)
 
     def get_notification(self, notification_id: str) -> NotificationResponse:
         """Fetch notification by ID."""
@@ -497,6 +551,7 @@ class NotificationService:
             ),
             read_status=ReadStatus.UNREAD,
             attempt_count=0,
+            max_attempts=config.notification_max_attempts,
             next_attempt_at=now if sub["channel"] == NotificationChannel.WEBHOOK else None,
             delivered_at=now if sub["channel"] == NotificationChannel.LOCAL_FEED else None,
             dedup_key=dedup_key,
@@ -545,6 +600,8 @@ class NotificationService:
             delivery_status=notif.delivery_status,
             read_status=notif.read_status,
             attempt_count=notif.attempt_count,
+            max_attempts=notif.max_attempts, delivery_generation=notif.delivery_generation,
+            failure_category=notif.failure_category,
             next_attempt_at=notif.next_attempt_at,
             last_attempt_at=notif.last_attempt_at,
             delivered_at=notif.delivered_at,

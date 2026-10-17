@@ -420,22 +420,15 @@ async def test_retry_notification_prerequisite_conflict_real_store(tmp_path):
     with pytest.raises(ActionExecutionError) as exc_info:
         await service.execute_action(act.action_id)
 
-    assert "no longer in FAILED state" in str(exc_info.value)
-
-    # 5. Authoritative action state: ABORTED, approval remains APPROVED, completed_at populated
+    assert "prerequisites changed" in str(exc_info.value)
     stored = service.get_action(act.action_id)
     assert stored.approval_status == ApprovalStatus.APPROVED
     assert stored.execution_status == ExecutionStatus.ABORTED
     assert stored.completed_at is not None
-    assert "no longer in FAILED state" in stored.failure_reason
-    assert stored.execution_result == {"current_state": "pending"}
-
-    # 6. Audits contain exactly one PREREQUISITE_CONFLICT_ABORTED, no EXECUTION_COMPLETED
-    audits = service.list_audits(act.action_id)
-    event_types = [a.event_type for a in audits]
-    assert "PREREQUISITE_CONFLICT_ABORTED" in event_types
+    assert "prerequisites changed" in stored.failure_reason
+    event_types = [a.event_type for a in service.list_audits(act.action_id)]
+    assert event_types.count("POLICY_REVALIDATION_FAILED") == 1
     assert "EXECUTION_COMPLETED" not in event_types
-    assert event_types.count("PREREQUISITE_CONFLICT_ABORTED") == 1
 
     # 7. Notification not mutated a second time
     n_stored = notif_store.get_notification("notif-real-1")

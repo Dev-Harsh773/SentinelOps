@@ -280,6 +280,12 @@ class SentinelOpsClient:
         """Mark all unread notifications for a project as read."""
         return self._request("POST", "/notifications/mark-all-read", params={"project_id": project_id})
 
+    def get_notification(self, notification_id: str) -> NotificationDTO:
+        return NotificationDTO.from_dict(self._request("GET", f"/notifications/{notification_id}"))
+
+    def get_notification_attempts(self, notification_id: str) -> List[Dict[str, Any]]:
+        return self._request("GET", f"/notifications/{notification_id}/attempts")
+
     def retry_notification(self, notification_id: str) -> NotificationDTO:
         """Retry a failed webhook notification."""
         data = self._request("POST", f"/notifications/{notification_id}/retry")

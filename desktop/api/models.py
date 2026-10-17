@@ -391,6 +391,9 @@ class NotificationDTO:
     recipient: str = ""
     delivery_status: str = "delivered"
     read_status: str = "unread"
+    max_attempts: int = 3
+    delivery_generation: int = 0
+    failure_category: Optional[str] = None
     attempt_count: int = 0
     next_attempt_at: Optional[datetime] = None
     last_attempt_at: Optional[datetime] = None
@@ -416,6 +419,9 @@ class NotificationDTO:
             delivery_status=str(data.get("delivery_status", "delivered")),
             read_status=str(data.get("read_status", "unread")),
             attempt_count=int(data.get("attempt_count", 0)),
+            max_attempts=int(data.get("max_attempts", 3)),
+            delivery_generation=int(data.get("delivery_generation", 0)),
+            failure_category=data.get("failure_category"),
             next_attempt_at=_parse_datetime(data.get("next_attempt_at")),
             last_attempt_at=_parse_datetime(data.get("last_attempt_at")),
             delivered_at=_parse_datetime(data.get("delivered_at")),

@@ -359,7 +359,7 @@ def test_retry_endpoint_status_codes():
     # Local feed is DELIVERED -> retry returns 409
     ret_resp = client.post(f"/notifications/{nid}/retry")
     assert ret_resp.status_code == 409
-    assert "already delivered" in ret_resp.json()["detail"]
+    assert "explicitly approved RETRY_NOTIFICATION" in ret_resp.json()["detail"]
 
 
 def test_production_db_isolation():
@@ -431,3 +431,31 @@ def test_production_db_isolation():
     assert prod_notifs_after == prod_notifs_before
     assert prod_subs_after == prod_subs_before
     assert test_proj_id not in prod_projects_after
+
+
+def test_stage23_incident_filter_attempt_history_and_retry_guard():
+    from app.notifications.models import Notification,DeliveryStatus,NotificationChannel,NotificationType
+    from app.incidents.models import Severity
+    _create_test_project("p23")
+    store=get_notification_store()
+    now=datetime.now(timezone.utc)
+    for nid,iid,project in (("n23","i23","p23"),("n24","i24","p23"),("n25","i23","other")):
+        store.create_notification(Notification(notification_id=nid,project_id=project,incident_id=iid,
+            channel=NotificationChannel.WEBHOOK,notification_type=NotificationType.INCIDENT_CREATED,
+            severity=Severity.HIGH,title="Failure",message="Failed",payload={},recipient="https://example.org/<redacted>",
+            delivery_config={"url":"https://example.org/secret-path","auth_secret":"private-token"},
+            delivery_status=DeliveryStatus.PENDING,created_at=now,updated_at=now))
+    claims=store.claim_due_notifications(3,now)
+    for claim in claims:
+        store.update_delivery_outcome(claim.notification_id,DeliveryStatus.FAILED,claim_token=claim.claim_token,
+            failure_reason="HTTP 503",failure_category="destination_unavailable",response_status=503)
+    response=client.get('/notifications?project_id=p23&incident_id=i23&channel=webhook&delivery_status=failed')
+    assert response.status_code==200
+    assert [n['notification_id'] for n in response.json()]==['n23']
+    history=client.get('/notifications/n23/attempts')
+    assert history.status_code==200 and history.json()[0]['response_status']==503
+    for secret in ('secret-path','private-token','delivery_config','claim_token'):
+        assert secret not in response.text+history.text
+    assert client.get('/notifications/missing/attempts').status_code==404
+    assert client.post('/notifications/n23/retry').status_code==409
+    assert store.get_notification('n23').delivery_status==DeliveryStatus.FAILED

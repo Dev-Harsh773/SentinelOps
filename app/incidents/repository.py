@@ -14,6 +14,7 @@ import threading
 from typing import Dict, List, Optional
 
 from app.incidents.models import Incident, IncidentStatus, Severity
+from app.notifications.outbox import initialize_outbox, record_intent
 
 
 class IncidentRepository(ABC):
@@ -113,6 +114,7 @@ class SqliteIncidentRepository(IncidentRepository):
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_incidents_project_id ON incidents(project_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents(created_at);")
+            initialize_outbox(self._conn)
             self._conn.commit()
 
     @staticmethod
@@ -169,7 +171,12 @@ class SqliteIncidentRepository(IncidentRepository):
                     updated_str,
                 ),
             )
-            self._conn.commit()
+            try:
+                record_intent(self._conn, incident)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             return incident
 
     def get_by_id(self, incident_id: str) -> Optional[Incident]:
@@ -230,7 +237,12 @@ class SqliteIncidentRepository(IncidentRepository):
                     incident.id,
                 ),
             )
-            self._conn.commit()
+            try:
+                record_intent(self._conn, incident)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             return incident
 
     def clear(self) -> None:
@@ -242,6 +254,7 @@ class SqliteIncidentRepository(IncidentRepository):
             )
         with self._lock:
             cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM notification_outbox;")
             cursor.execute("DELETE FROM incidents;")
             self._conn.commit()
 

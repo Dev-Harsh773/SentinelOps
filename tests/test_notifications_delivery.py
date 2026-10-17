@@ -95,44 +95,44 @@ async def test_webhook_delivery_success(delivery_env):
 
 
 @pytest.mark.asyncio
-async def test_retryable_status_codes_and_backoff(delivery_env):
+@pytest.mark.parametrize("code", (408, 429, 500, 502, 503, 504))
+async def test_retryable_status_codes_and_backoff(delivery_env, code):
     runtime, store = delivery_env
 
-    for code in (408, 429, 500, 502, 503, 504):
-        def mock_handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(code, text=f"Error {code}")
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(code, text=f"Error {code}")
 
-        runtime._http_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+    runtime._http_client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
 
-        nid = f"notif-code-{code}"
-        now = datetime.now(timezone.utc)
-        notif = Notification(
-            notification_id=nid,
-            project_id="proj-alpha",
-            notification_type=NotificationType.INCIDENT_CREATED,
-            severity=Severity.HIGH,
-            title="Error",
-            message="Msg",
-            payload={},
-            delivery_config={"url": "https://hooks.example.com/alerts"},
-            channel=NotificationChannel.WEBHOOK,
-            recipient="https://hooks.example.com/<redacted>",
-            delivery_status=DeliveryStatus.PENDING,
-            next_attempt_at=now,
-            created_at=now,
-            updated_at=now,
-        )
-        store.create_notification(notif)
+    nid = f"notif-code-{code}"
+    now = datetime.now(timezone.utc)
+    notif = Notification(
+        notification_id=nid,
+        project_id="proj-alpha",
+        notification_type=NotificationType.INCIDENT_CREATED,
+        severity=Severity.HIGH,
+        title="Error",
+        message="Msg",
+        payload={},
+        delivery_config={"url": "https://hooks.example.com/alerts"},
+        channel=NotificationChannel.WEBHOOK,
+        recipient="https://hooks.example.com/<redacted>",
+        delivery_status=DeliveryStatus.PENDING,
+        next_attempt_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    store.create_notification(notif)
 
-        claimed = store.claim_due_notifications(limit=1, now=now)
-        assert len(claimed) == 1
-        await runtime._deliver_webhook(claimed[0])
+    claimed = store.claim_due_notifications(limit=1, now=now)
+    assert len(claimed) == 1
+    await runtime._deliver_webhook(claimed[0])
 
-        updated = store.get_notification(nid)
-        assert updated.delivery_status == DeliveryStatus.PENDING
-        assert updated.attempt_count == 1
-        assert updated.next_attempt_at is not None
-        assert f"HTTP {code}" in updated.failure_reason
+    updated = store.get_notification(nid)
+    assert updated.delivery_status == DeliveryStatus.PENDING
+    assert updated.attempt_count == 1
+    assert updated.next_attempt_at is not None
+    assert f"HTTP {code}" in updated.failure_reason
 
 
 @pytest.mark.asyncio

@@ -247,7 +247,7 @@ def test_api_execute_retry_notification_prerequisite_conflict_timing(client):
     - action becomes ABORTED (never stranded in EXECUTING)
     - approval remains APPROVED
     - completed_at is populated
-    - PREREQUISITE_CONFLICT_ABORTED recorded exactly once
+    - POLICY_REVALIDATION_FAILED recorded exactly once
     - no EXECUTION_COMPLETED success event
     - API does not return 500 (returns 409 Conflict)
     - notification is not mutated a second time
@@ -299,7 +299,7 @@ def test_api_execute_retry_notification_prerequisite_conflict_timing(client):
     # MUST NOT return HTTP 500; MUST return HTTP 409 Conflict
     exec_resp = client.post(f"/actions/{action_id}/execute")
     assert exec_resp.status_code == 409
-    assert "no longer in FAILED state" in exec_resp.json()["detail"]
+    assert "prerequisites changed" in exec_resp.json()["detail"]
 
     # 5. Authoritative SafeAction state MUST be terminal ABORTED (never EXECUTING)
     get_resp = client.get(f"/actions/{action_id}")
@@ -308,8 +308,8 @@ def test_api_execute_retry_notification_prerequisite_conflict_timing(client):
     assert act_state["approval_status"] == "approved"
     assert act_state["execution_status"] == "aborted"
     assert act_state["completed_at"] is not None
-    assert "no longer in FAILED state" in act_state["failure_reason"]
-    assert act_state["execution_result"] == {"current_state": "pending"}
+    assert "prerequisites changed" in act_state["failure_reason"]
+    assert act_state["execution_result"] is None
 
     # 6. Verify audit event sequence
     audit_resp = client.get(f"/actions/{action_id}/audit")
@@ -320,10 +320,10 @@ def test_api_execute_retry_notification_prerequisite_conflict_timing(client):
     assert "PROPOSED" in event_types
     assert "POLICY_EVALUATED" in event_types
     assert "APPROVED" in event_types
-    assert "EXECUTION_STARTED" in event_types
-    assert "PREREQUISITE_CONFLICT_ABORTED" in event_types
+    assert "EXECUTION_STARTED" not in event_types
+    assert "POLICY_REVALIDATION_FAILED" in event_types
     assert "EXECUTION_COMPLETED" not in event_types
-    assert event_types.count("PREREQUISITE_CONFLICT_ABORTED") == 1
+    assert event_types.count("POLICY_REVALIDATION_FAILED") == 1
 
     # 7. Verify notification was NOT mutated a second time
     notif_get_resp = client.get("/notifications/notif-api-1")

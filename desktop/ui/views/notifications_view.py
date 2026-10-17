@@ -185,6 +185,18 @@ class NotificationsView(QWidget):
         channel_lbl = QLabel(f"Channel: {notif.channel} ({notif.delivery_status})", card)
         channel_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
         footer_row.addWidget(channel_lbl)
+        details = [f"Destination: {notif.recipient}",
+                   f"Attempts: {notif.attempt_count}/{notif.max_attempts} (retry cycle {notif.delivery_generation})"]
+        for label, value in (("Last attempt", notif.last_attempt_at), ("Next retry", notif.next_attempt_at),
+                             ("Delivered", notif.delivered_at), ("Failure category", notif.failure_category),
+                             ("Failure", notif.failure_reason)):
+            if value is not None:
+                details.append(f"{label}: {value}")
+        delivery_details = QLabel("\n".join(details), card)
+        delivery_details.setTextFormat(Qt.TextFormat.PlainText)
+        delivery_details.setWordWrap(True)
+        c_layout.addWidget(delivery_details)
+
 
         footer_row.addStretch()
 
@@ -250,20 +262,46 @@ class NotificationsView(QWidget):
         self._in_flight_retries.add(notification_id)
         self._render_feed()
 
-        def worker():
-            return self.client.retry_notification(notification_id)
-
-        def on_success(updated: NotificationDTO):
+        notif = next((n for n in self._all_notifications if n.notification_id == notification_id), None)
+        if notif is None:
             self._in_flight_retries.discard(notification_id)
-            self.state.apply_notification_update(updated)
-            app_signals.action_succeeded.emit("Retry Initiated", "Notification reset to pending.")
+            return
 
-        def on_error(exc: Exception):
+        def on_error(exc):
             self._in_flight_retries.discard(notification_id)
             self._render_feed()
-            app_signals.action_failed.emit("Retry Failed", str(exc))
+            app_signals.action_failed.emit("Retry failed", str(exc))
 
-        self.task_runner.run(worker, on_success=on_success, on_error=on_error)
+        def proposed(action):
+            if action.policy_status != "allowed":
+                on_error(RuntimeError(action.policy_denial_reason or "Retry denied by policy"))
+                return
+            reply = QMessageBox.question(self, "Approve notification retry",
+                f"Approve SafeAction {action.action_id} to retry notification {notification_id}?\n"
+                f"Destination: {notif.recipient}\nThis starts a new bounded delivery cycle.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply != QMessageBox.StandardButton.Yes:
+                def reject():
+                    self.client.reject_action(action.action_id, "desktop-operator", "Operator declined retry")
+                self.task_runner.run(reject, on_success=lambda _: on_error(RuntimeError("Retry declined")), on_error=on_error)
+                return
+            def execute():
+                self.client.approve_action(action.action_id, "desktop-operator", "Explicit desktop confirmation")
+                result = self.client.execute_action(action.action_id)
+                if result.execution_status != "succeeded":
+                    raise RuntimeError(result.failure_reason or "SafeAction retry did not succeed")
+                return self.client.get_notification(notification_id)
+            def completed(updated):
+                self._in_flight_retries.discard(notification_id)
+                self.state.apply_notification_update(updated)
+                app_signals.action_succeeded.emit("Notification", "Approved retry queued; delivery status will refresh.")
+            self.task_runner.run(execute, on_success=completed, on_error=on_error)
+
+        self.task_runner.run(lambda: self.client.propose_action(
+            project_id=notif.project_id, action_type="retry_notification", target_type="notification",
+            target_id=notification_id, operator_claim="desktop-operator"),
+            on_success=proposed, on_error=on_error)
 
     def _on_mark_all_read_clicked(self) -> None:
         if not self.state.is_online():

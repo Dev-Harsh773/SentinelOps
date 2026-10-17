@@ -324,8 +324,10 @@ def test_manual_retry_behavior(service_env):
         service.retry_notification(notif.notification_id)
     assert "currently pending or delivering" in str(exc_info.value)
 
-    # 2. Mark DELIVERED -> 409
+    # 2. A claimed delivery completes -> delivered is ineligible for retry.
+    claim = notif_store.claim_due_notifications(1, now)[0]
     service._store.update_delivery_outcome(
+        claim_token=claim.claim_token,
         notification_id=notif.notification_id,
         delivery_status=DeliveryStatus.DELIVERED,
         delivered_at=now,
@@ -335,13 +337,10 @@ def test_manual_retry_behavior(service_env):
         service.retry_notification(notif.notification_id)
     assert "already delivered" in str(exc_info.value)
 
-    # 3. Mark FAILED -> retry succeeds and resets to PENDING
-    service._store.update_delivery_outcome(
-        notification_id=notif.notification_id,
-        delivery_status=DeliveryStatus.FAILED,
-        failure_reason="Permanent connection drop",
-        now=now,
-    )
+    # 3. A separate failed fixture can begin a new retry generation.
+    notif = notif.model_copy(update={"notification_id": "failed-retry", "dedup_key": "failed-retry",
+        "delivery_status": DeliveryStatus.FAILED, "attempt_count": 3})
+    notif_store.create_notification(notif)
     retried = service.retry_notification(notif.notification_id)
     assert retried.delivery_status == DeliveryStatus.PENDING
     assert retried.attempt_count == 0

@@ -677,10 +677,11 @@ class SqliteActionStore:
                         policy_status = 'denied',
                         execution_status = 'aborted',
                         failure_reason = ?,
-                        updated_at = ?
+                        updated_at = ?,
+                        completed_at = ?
                     WHERE action_id = ?;
                     """,
-                    (reason, now_str, action_id),
+                    (reason, now_str, now_str, action_id),
                 )
 
                 audit = ActionAuditRecord(

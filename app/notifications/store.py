@@ -1,6 +1,7 @@
 """SQLite storage for notification subscriptions and durable notification records."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import uuid
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.incidents.models import Severity
 from app.notifications.models import (
-    DeliveryStatus,
+    DeliveryStatus, DeliveryAttempt, FailureCategory,
     Notification,
     NotificationChannel,
     NotificationType,
@@ -142,6 +143,27 @@ class SqliteNotificationStore:
                 );
                 """
             )
+
+            # Additive migration: old Stage 22 records keep their lifecycle and budget.
+            columns = {r[1] for r in cursor.execute("PRAGMA table_info(notifications)")}
+            for name, definition in {
+                "max_attempts": "INTEGER NOT NULL DEFAULT 3",
+                "delivery_generation": "INTEGER NOT NULL DEFAULT 0",
+                "claim_token": "TEXT", "lease_expires_at": "TEXT", "failure_category": "TEXT",
+            }.items():
+                if name not in columns:
+                    cursor.execute(f"ALTER TABLE notifications ADD COLUMN {name} {definition}")
+            cursor.execute("""CREATE TABLE IF NOT EXISTS notification_attempts (
+                attempt_id TEXT PRIMARY KEY, notification_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL, delivery_generation INTEGER NOT NULL,
+                started_at TEXT NOT NULL, dispatched_at TEXT, finished_at TEXT,
+                outcome TEXT NOT NULL, response_status INTEGER, failure_category TEXT,
+                failure_message TEXT, latency_ms REAL,
+                UNIQUE(notification_id, delivery_generation, attempt_number),
+                FOREIGN KEY(notification_id) REFERENCES notifications(notification_id) ON DELETE CASCADE
+            )""")
+            from app.notifications.outbox import initialize_outbox
+            initialize_outbox(self._conn)
 
             # Indexes
             cursor.execute(
@@ -310,8 +332,8 @@ class SqliteNotificationStore:
                         delivery_config_json, channel, recipient, delivery_status,
                         read_status, attempt_count, next_attempt_at, last_attempt_at,
                         delivered_at, read_at, failure_reason, dedup_key,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        created_at, updated_at, max_attempts, delivery_generation, failure_category
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         notif.notification_id,
@@ -337,9 +359,14 @@ class SqliteNotificationStore:
                         notif.dedup_key,
                         notif.created_at.isoformat(),
                         notif.updated_at.isoformat(),
+                        notif.max_attempts, notif.delivery_generation,
+                        notif.failure_category.value if notif.failure_category else None,
                     ),
                 )
                 self._conn.commit()
+                logger.info("Notification queued id=%s project=%s incident=%s channel=%s status=%s",
+                    notif.notification_id, notif.project_id, notif.incident_id,
+                    notif.channel.value, notif.delivery_status.value)
                 return notif
             except sqlite3.IntegrityError as exc:
                 self._conn.rollback()
@@ -361,12 +388,12 @@ class SqliteNotificationStore:
     def list_notifications(
         self,
         project_id: Optional[str] = None,
-        incident_id: Optional[str] = None,
         read_status: Optional[ReadStatus] = None,
         channel: Optional[NotificationChannel] = None,
         delivery_status: Optional[DeliveryStatus] = None,
         limit: int = 50,
         offset: int = 0,
+        incident_id: Optional[str] = None,
     ) -> List[Notification]:
         """List notifications with pagination and filtering.
         
@@ -445,188 +472,134 @@ class SqliteNotificationStore:
     # Delivery Worker Claim & Lifecycle
     # -------------------------------------------------------------------------
 
-    def claim_due_notifications(self, limit: int = 5, now: Optional[datetime] = None) -> List[Notification]:
-        """Atomically claim pending notifications whose next_attempt_at is due."""
-        claim_time = now or datetime.now(timezone.utc)
-        claim_str = claim_time.isoformat()
+    def claim_due_notifications(self, limit: int = 5, now: Optional[datetime] = None,
+                                lease_seconds: float = 120.0) -> List[Notification]:
+        """Acquire database leases and create attempts in the same write transaction."""
+        if limit <= 0:
+            return []
+        now = now or datetime.now(timezone.utc)
+        claimed = []
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            rows = self._conn.execute("""SELECT notification_id FROM notifications
+                WHERE delivery_status='pending' AND channel='webhook'
+                AND attempt_count < max_attempts
+                AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                ORDER BY created_at, notification_id LIMIT ?""", (now.isoformat(), limit)).fetchall()
+            for row in rows:
+                token = str(uuid.uuid4())
+                nid = row[0]
+                self._conn.execute("""UPDATE notifications SET delivery_status='delivering',
+                    attempt_count=attempt_count+1, claim_token=?, lease_expires_at=?,
+                    last_attempt_at=?, next_attempt_at=NULL, updated_at=? WHERE notification_id=?""",
+                    (token, (now+timedelta(seconds=lease_seconds)).isoformat(),
+                     now.isoformat(), now.isoformat(), nid))
+                n = self.get_notification(nid)
+                self._conn.execute("""INSERT INTO notification_attempts
+                    (attempt_id,notification_id,attempt_number,delivery_generation,started_at,outcome)
+                    VALUES (?,?,?,?,?,'claimed')""",
+                    (token,nid,n.attempt_count,n.delivery_generation,now.isoformat()))
+                claimed.append(n)
+        return claimed
 
-        claimed_notifications: List[Notification] = []
+    def begin_dispatch(self, notification_id: str, token: str, now: datetime) -> bool:
+        """A claim may be dispatched once; stale or already-started callers cannot send."""
+        with self._lock, self._conn:
+            result = self._conn.execute("""UPDATE notification_attempts SET dispatched_at=?, outcome='sending'
+                WHERE attempt_id=? AND notification_id=? AND dispatched_at IS NULL AND finished_at IS NULL
+                AND EXISTS (SELECT 1 FROM notifications n WHERE n.notification_id=?
+                    AND n.claim_token=? AND n.delivery_status='delivering' AND n.lease_expires_at>?)""",
+                (now.isoformat(),token,notification_id,notification_id,token,now.isoformat()))
+            return result.rowcount == 1
+
+    def update_delivery_outcome(self, notification_id: str, delivery_status: DeliveryStatus,
+                                next_attempt_at=None, failure_reason=None, delivered_at=None, now=None,
+                                *, claim_token=None, failure_category=None, response_status=None,
+                                latency_ms=None) -> bool:
+        """Only the current claimed attempt can finish a delivery."""
+        if delivery_status not in (DeliveryStatus.PENDING, DeliveryStatus.DELIVERED, DeliveryStatus.FAILED):
+            raise ValueError("Invalid delivery outcome")
+        now = now or datetime.now(timezone.utc)
+        category = failure_category.value if isinstance(failure_category, FailureCategory) else failure_category
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            current = self.get_notification(notification_id)
+            if not claim_token or current.claim_token != claim_token or current.delivery_status != DeliveryStatus.DELIVERING:
+                return False
+            self._conn.execute("""UPDATE notifications SET delivery_status=?,next_attempt_at=?,failure_reason=?,
+                delivered_at=?,updated_at=?,failure_category=?,claim_token=NULL,lease_expires_at=NULL
+                WHERE notification_id=?""", (delivery_status.value,
+                next_attempt_at.isoformat() if next_attempt_at else None, failure_reason,
+                delivered_at.isoformat() if delivered_at else None, now.isoformat(),category,notification_id))
+            if claim_token:
+                self._conn.execute("""UPDATE notification_attempts SET finished_at=?,outcome=?,response_status=?,
+                    failure_category=?,failure_message=?,latency_ms=? WHERE attempt_id=? AND finished_at IS NULL""",
+                    (now.isoformat(), 'retry_scheduled' if delivery_status == DeliveryStatus.PENDING else delivery_status.value,
+                     response_status,category,failure_reason,latency_ms,claim_token))
+        return True
+
+    def pending_intents(self, limit=100):
         with self._lock:
-            cursor = self._conn.cursor()
-            # 1. Discover candidates
-            cursor.execute(
-                """
-                SELECT notification_id FROM notifications
-                WHERE delivery_status = 'pending'
-                  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                ORDER BY created_at ASC
-                LIMIT ?;
-                """,
-                (claim_str, limit),
-            )
-            candidate_ids = [r["notification_id"] for r in cursor.fetchall()]
+            return [dict(r) for r in self._conn.execute(
+                "SELECT * FROM notification_outbox WHERE processed_at IS NULL ORDER BY rowid LIMIT ?", (limit,))]
 
-            # 2. Atomically claim each candidate
-            for nid in candidate_ids:
-                cursor.execute(
-                    """
-                    UPDATE notifications SET
-                        delivery_status = 'delivering',
-                        attempt_count = attempt_count + 1,
-                        last_attempt_at = ?,
-                        updated_at = ?
-                    WHERE notification_id = ?
-                      AND delivery_status = 'pending'
-                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?);
-                    """,
-                    (claim_str, claim_str, nid, claim_str),
-                )
-                if cursor.rowcount == 1:
-                    self._conn.commit()
-                    claimed_notifications.append(self.get_notification(nid))
-
-        return claimed_notifications
-
-    def update_delivery_outcome(
-        self,
-        notification_id: str,
-        delivery_status: DeliveryStatus,
-        next_attempt_at: Optional[datetime] = None,
-        failure_reason: Optional[str] = None,
-        delivered_at: Optional[datetime] = None,
-        now: Optional[datetime] = None,
-    ) -> None:
-        """Record the outcome of a delivery attempt."""
-        up_time = (now or datetime.now(timezone.utc)).isoformat()
+    def has_incident_intent(self, project_id, incident_id, status):
         with self._lock:
-            cursor = self._conn.cursor()
-            cursor.execute(
-                """
-                UPDATE notifications SET
-                    delivery_status = ?,
-                    next_attempt_at = ?,
-                    failure_reason = ?,
-                    delivered_at = ?,
-                    updated_at = ?
-                WHERE notification_id = ?;
-                """,
-                (
-                    delivery_status.value,
-                    next_attempt_at.isoformat() if next_attempt_at else None,
-                    failure_reason,
-                    delivered_at.isoformat() if delivered_at else None,
-                    up_time,
-                    notification_id,
-                ),
-            )
-            self._conn.commit()
+            return self._conn.execute("SELECT 1 FROM notification_outbox WHERE event_key=?",
+                (f"{project_id}:{incident_id}:{status}",)).fetchone() is not None
+
+    def complete_intent(self, key, now):
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE notification_outbox SET processed_at=?, subscriptions_json='[]' WHERE event_key=? AND processed_at IS NULL",
+                               (now.isoformat(),key))
+
+    def list_attempts(self, notification_id: str) -> List[DeliveryAttempt]:
+        with self._lock:
+            self.get_notification(notification_id)
+            rows = self._conn.execute("""SELECT * FROM notification_attempts WHERE notification_id=?
+                ORDER BY delivery_generation,attempt_number""", (notification_id,)).fetchall()
+            return [DeliveryAttempt(**dict(row)) for row in rows]
 
     def reset_for_manual_retry(self, notification_id: str, now: datetime) -> Notification:
-        """Reset a failed notification to pending for manual retry."""
-        now_str = now.isoformat()
-        with self._lock:
+        success, notification, _ = self.atomic_reset_failed_for_retry(notification_id, now)
+        if notification is None:
+            raise NotificationNotFoundError(notification_id)
+        if not success:
+            raise ValueError("Only failed webhook notifications can be retried")
+        return notification
+
+    def atomic_reset_failed_for_retry(self, notification_id: str, now: datetime):
+        """Start a new bounded generation without erasing any attempt history."""
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            result = self._conn.execute("""UPDATE notifications SET delivery_status='pending',attempt_count=0,
+                delivery_generation=delivery_generation+1,next_attempt_at=?,updated_at=?,failure_reason=NULL,
+                failure_category=NULL,claim_token=NULL,lease_expires_at=NULL
+                WHERE notification_id=? AND delivery_status='failed' AND channel='webhook'""",
+                (now.isoformat(),now.isoformat(),notification_id))
             try:
-                cursor = self._conn.cursor()
-                cursor.execute(
-                    """
-                    UPDATE notifications SET
-                        delivery_status = 'pending',
-                        attempt_count = 0,
-                        next_attempt_at = ?,
-                        failure_reason = NULL,
-                        updated_at = ?
-                    WHERE notification_id = ?;
-                    """,
-                    (now_str, now_str, notification_id),
-                )
-                if cursor.rowcount == 0:
-                    self._conn.rollback()
-                    raise NotificationNotFoundError(notification_id)
-                self._conn.commit()
-                return self.get_notification(notification_id)
-            except Exception:
-                self._conn.rollback()
-                raise
-
-    def atomic_reset_failed_for_retry(
-        self, notification_id: str, now: datetime
-    ) -> Tuple[bool, Optional[Notification], Optional[DeliveryStatus]]:
-        """Atomically reset a notification to pending ONLY if its delivery_status == 'failed'.
-
-        Returns:
-            (True, updated_notification, None) if successfully reset.
-            (False, current_notification, current_status) if status was not 'failed'.
-            (False, None, None) if notification was not found.
-        """
-        now_str = now.isoformat()
-        with self._lock:
-            try:
-                cursor = self._conn.cursor()
-                cursor.execute(
-                    """
-                    UPDATE notifications SET
-                        delivery_status = 'pending',
-                        attempt_count = 0,
-                        next_attempt_at = ?,
-                        failure_reason = NULL,
-                        updated_at = ?
-                    WHERE notification_id = ? AND delivery_status = 'failed';
-                    """,
-                    (now_str, now_str, notification_id),
-                )
-                if cursor.rowcount > 0:
-                    self._conn.commit()
-                    return True, self.get_notification(notification_id), None
-
-                # rowcount == 0: rollback the update transaction immediately
-                # to release write locks on SQLite before reading current state
-                self._conn.rollback()
-                cursor.execute("SELECT delivery_status FROM notifications WHERE notification_id = ?;", (notification_id,))
-                row = cursor.fetchone()
-                if not row:
-                    return False, None, None
-                current_status = DeliveryStatus(row["delivery_status"])
-                return False, self.get_notification(notification_id), current_status
-            except Exception:
-                self._conn.rollback()
-                raise
+                current = self.get_notification(notification_id)
+            except NotificationNotFoundError:
+                return False,None,None
+            return (True,current,None) if result.rowcount else (False,current,current.delivery_status)
 
     def recover_in_flight_on_startup(self, now: datetime) -> int:
-        """Reset interrupted 'delivering' notifications to 'pending' on application startup.
-        
-        Preserves existing attempt_count. If attempt_count >= 3, sets to 'failed'.
-        """
-        now_str = now.isoformat()
-        with self._lock:
-            cursor = self._conn.cursor()
-            # 1. Interrupted with attempts remaining -> pending
-            cursor.execute(
-                """
-                UPDATE notifications SET
-                    delivery_status = 'pending',
-                    next_attempt_at = ?,
-                    failure_reason = 'Process restarted during delivery attempt',
-                    updated_at = ?
-                WHERE delivery_status = 'delivering' AND attempt_count < 3;
-                """,
-                (now_str, now_str),
-            )
-            recovered = cursor.rowcount
-
-            # 2. Interrupted with max attempts reached -> failed
-            cursor.execute(
-                """
-                UPDATE notifications SET
-                    delivery_status = 'failed',
-                    next_attempt_at = NULL,
-                    failure_reason = 'Process restarted after max attempts reached',
-                    updated_at = ?
-                WHERE delivery_status = 'delivering' AND attempt_count >= 3;
-                """,
-                (now_str,),
-            )
-            self._conn.commit()
-            return recovered
+        """Recover expired leases only, never another worker's active delivery."""
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            rows = self._conn.execute("""SELECT * FROM notifications WHERE delivery_status='delivering'
+                AND (lease_expires_at IS NULL OR lease_expires_at<=?)""", (now.isoformat(),)).fetchall()
+            for row in rows:
+                n = self._row_to_notification(row)
+                outcome = 'pending' if n.attempt_count < n.max_attempts else 'failed'
+                self._conn.execute("""UPDATE notifications SET delivery_status=?,next_attempt_at=?,updated_at=?,
+                    claim_token=NULL,lease_expires_at=NULL,failure_category='interrupted',
+                    failure_reason='Delivery interrupted; remote outcome unknown' WHERE notification_id=?""",
+                    (outcome,now.isoformat() if outcome=='pending' else None,now.isoformat(),n.notification_id))
+                self._conn.execute("""UPDATE notification_attempts SET finished_at=?,outcome='interrupted',
+                    failure_category='interrupted',failure_message='Delivery interrupted; remote outcome unknown'
+                    WHERE attempt_id=? AND finished_at IS NULL""", (now.isoformat(),n.claim_token))
+            return len(rows)
 
     # -------------------------------------------------------------------------
     # Maintenance & Conversions
@@ -636,6 +609,7 @@ class SqliteNotificationStore:
         """Clear all notification tables. Strictly reserved for test isolation."""
         with self._lock:
             cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM notification_outbox;")
             cursor.execute("DELETE FROM notifications;")
             cursor.execute("DELETE FROM notification_subscriptions;")
             self._conn.commit()
@@ -683,6 +657,9 @@ class SqliteNotificationStore:
             delivery_status=DeliveryStatus(row["delivery_status"]),
             read_status=ReadStatus(row["read_status"]),
             attempt_count=row["attempt_count"],
+            max_attempts=row["max_attempts"], delivery_generation=row["delivery_generation"],
+            claim_token=row["claim_token"], lease_expires_at=row["lease_expires_at"],
+            failure_category=row["failure_category"],
             next_attempt_at=datetime.fromisoformat(row["next_attempt_at"]) if row["next_attempt_at"] else None,
             last_attempt_at=datetime.fromisoformat(row["last_attempt_at"]) if row["last_attempt_at"] else None,
             delivered_at=datetime.fromisoformat(row["delivered_at"]) if row["delivered_at"] else None,

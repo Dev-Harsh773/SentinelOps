@@ -64,6 +64,25 @@ class AppConfig:
     public_ingress_url: Optional[str] = None
     sentinel_workspaces_root: Optional[str] = None
 
+    notifications_enabled: bool = True
+    notification_poll_interval_seconds: float = 1.0
+    notification_max_attempts: int = 3
+    notification_retry_base_seconds: float = 2.0
+    notification_retry_cap_seconds: float = 60.0
+    notification_lease_seconds: float = 120.0
+
+    def __post_init__(self):
+        import math
+        if not 1 <= self.notification_max_attempts <= 20:
+            raise ValueError("NOTIFICATION_MAX_ATTEMPTS must be between 1 and 20")
+        for name in ("notification_poll_interval_seconds", "notification_retry_base_seconds",
+                     "notification_retry_cap_seconds", "notification_lease_seconds"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.notification_lease_seconds < 65:
+            raise ValueError("Notification lease must exceed the maximum 60-second request deadline")
+
     @classmethod
     def from_env(cls) -> "AppConfig":
         # Read from environment with sensible local development defaults
@@ -75,6 +94,12 @@ class AppConfig:
         watcher_log_path = os.getenv("WATCHER_LOG_PATH") or demo_log_path
 
         return cls(
+            notifications_enabled=os.getenv("NOTIFICATIONS_ENABLED", "true").lower() in ("true", "1", "yes"),
+            notification_poll_interval_seconds=float(os.getenv("NOTIFICATION_POLL_INTERVAL_SECONDS", "1")),
+            notification_max_attempts=int(os.getenv("NOTIFICATION_MAX_ATTEMPTS", "3")),
+            notification_retry_base_seconds=float(os.getenv("NOTIFICATION_RETRY_BASE_SECONDS", "2")),
+            notification_retry_cap_seconds=float(os.getenv("NOTIFICATION_RETRY_CAP_SECONDS", "60")),
+            notification_lease_seconds=float(os.getenv("NOTIFICATION_LEASE_SECONDS", "120")),
             app_name=os.getenv("APP_NAME", "sentinelops"),
             app_env=os.getenv("APP_ENV", "development"),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

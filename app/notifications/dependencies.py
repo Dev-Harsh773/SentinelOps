@@ -44,7 +44,13 @@ def get_notification_runtime() -> NotificationDeliveryRuntime:
     with _lock:
         if _notification_runtime is None:
             store = get_notification_store()
-            _notification_runtime = NotificationDeliveryRuntime(store=store)
+            from app.common.config import config
+            _notification_runtime = NotificationDeliveryRuntime(store=store,
+                enabled=config.notifications_enabled,
+                poll_interval_seconds=config.notification_poll_interval_seconds,
+                base_backoff_seconds=config.notification_retry_base_seconds,
+                retry_cap_seconds=config.notification_retry_cap_seconds,
+                lease_seconds=config.notification_lease_seconds)
         return _notification_runtime
 
 

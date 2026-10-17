@@ -429,12 +429,12 @@ def test_recover_in_flight_on_startup(store_env):
     notif_store.create_notification(notif2)
 
     recovered = notif_store.recover_in_flight_on_startup(now=now)
-    assert recovered == 1
+    assert recovered == 2
 
     rec1 = notif_store.get_notification("notif-crash-1")
     assert rec1.delivery_status == DeliveryStatus.PENDING
     assert rec1.attempt_count == 1  # Preserved!
-    assert "Process restarted" in (rec1.failure_reason or "")
+    assert "interrupted" in (rec1.failure_reason or "")
 
     rec2 = notif_store.get_notification("notif-crash-2")
     assert rec2.delivery_status == DeliveryStatus.FAILED

@@ -2137,3 +2137,38 @@ follow-ups. Stage 23 was not started; SentinelOps remains unstaged/uncommitted/u
   found no secret in changed/untracked files. Local evidence artifacts remain ignored.
 
 Recommended manual commit: `Harden Stage 22 telemetry, desktop evidence, and validation ingress`.
+
+
+---
+
+## Stage 23 ? Durable Alert Delivery, Notification Reliability & Recovery
+
+Date: 2026-10-18. Status: **Approved**. Baseline: pushed Stage 22 `27b9805`.
+
+Incident persistence and subscription snapshots now share a transactional SQLite outbox boundary.
+Notification fan-out is replayable, delivery claims are leased and fenced, and each actual attempt
+has durable safe diagnostics. Existing public lifecycle enums are preserved; a future-due pending
+record represents scheduled retry. Retry budgets/backoff are configurable and interrupted sends are
+recovered only after their lease expires. Receivers must deduplicate stable notification IDs across
+ambiguous crash/acknowledgement boundaries; exactly-once external effects are not claimed.
+
+The direct retry API no longer bypasses human approval. Desktop retry now proposes, displays a
+concrete confirmation, approves and executes through SafeActions. Proposal/execution recheck failed
+webhook status, project and optional incident linkage. Android retains WorkManager deduplication and
+explains that failed-delivery retry approval is available in Windows Control Center.
+
+A controlled local receiver genuinely exhausted three HTTP 503 attempts. The user explicitly
+approved action `76a96722-1050-4226-be8e-6a9c4c4c5eb5`; generation 1 delivered HTTP 200 and
+all four attempts plus the approval/execution audit remained persisted. Separate process-restart
+and two-worker duplicate scenarios passed. Full final results and operational limitations are in
+[STAGE23_VERIFICATION.md](STAGE23_VERIFICATION.md).
+
+Implementation regression issues were corrected rather than skipped, including incident-first
+schema initialization and stale fixture incident bindings. No production history was reset, no
+Stage 24 work was introduced, and no commit or push was performed.
+
+Final Stage 23 gates: **487 backend + 81 desktop**, **9 gateway**, **32 Android JVM**, and
+**19 chaos-demo** tests passed; `git diff --check` passed. Live desktop inspection confirmed
+failed 3/3 attempts with HTTP 503/category, successful cycle-1 approved retry, redacted destination
+and online project-scoped feed. Final process restart preserved states, attempt counts and audit.
+The local validation services remain available on loopback ports 8023/9023 for operator review.

@@ -6,6 +6,7 @@ and concurrent user actions never accesses deleted Qt widgets or raises RuntimeE
 
 import os
 import sys
+from types import SimpleNamespace
 import threading
 import time
 from datetime import datetime, timezone
@@ -235,21 +236,13 @@ def test_stress_notification_mark_read_retry_in_flight_feed_rebuild(qapp, reset_
             delivery_status="delivered",
         )
 
-    def delayed_retry(notif_id):
+    def delayed_retry(**kwargs):
         retry_started.set()
         retry_proceed.wait(timeout=5.0)
-        return NotificationDTO(
-            notification_id=notif_id,
-            project_id="p-1",
-            title="Alert Retried",
-            message="Msg",
-            read_status="unread",
-            channel="webhook",
-            delivery_status="pending",
-        )
+        return SimpleNamespace(policy_status="denied", policy_denial_reason="Validation stress fixture")
 
     mock_client.mark_notification_read.side_effect = delayed_mark_read
-    mock_client.retry_notification.side_effect = delayed_retry
+    mock_client.propose_action.side_effect = delayed_retry
 
     cfg = DesktopConfig()
     win = MainWindow(config=cfg, client=mock_client)
@@ -476,9 +469,9 @@ def test_stress_multiple_unrelated_async_operations_overlapping(qapp, reset_app_
         all_proceed.wait(5.0),
         NotificationDTO(notification_id=nid, project_id="p-1", title="T", message="M", read_status="read"),
     )[1]
-    mock_client.retry_notification.side_effect = lambda nid: (
+    mock_client.propose_action.side_effect = lambda **kwargs: (
         all_proceed.wait(5.0),
-        NotificationDTO(notification_id=nid, project_id="p-1", title="T", message="M", read_status="unread", channel="webhook", delivery_status="pending"),
+        SimpleNamespace(policy_status="denied", policy_denial_reason="Validation stress fixture"),
     )[1]
     mock_client.update_incident_status.side_effect = lambda iid, s: (
         all_proceed.wait(5.0),

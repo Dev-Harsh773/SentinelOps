@@ -2,18 +2,15 @@
 
 ## 1. Project Status
 
-SentinelOps is implemented and manually approved through **Stage 21**.
+Stage 23 - Durable Alert Delivery, Notification Reliability & Recovery: **Approved**.
 
-Current confirmed repository state:
-
-- Active branch: `main`
-- Latest local commit: `1dcc50a` (Stage 21 onboarding)
-- Stage 22 is **APPROVED** after live validation on 2026-10-17 and final review on 2026-10-18
-- Regression: **445 backend/demo + 78 desktop = 523 Python tests**, **9 gateway**, **19 chaos-demo**, **32 Android JVM tests** passed
-- Render commit `af6f9b61c3eb4c949d9f02ac1201e68667fa0488` verified Live; rich telemetry, source-grounded mock investigation, remediation, report, desktop reopening, and restart persistence passed
-- Current rotated admin token authenticated successfully; chaos recovered and temporary validation services/tunnel stopped
-- SentinelOps remains uncommitted/unpushed for the user's manual review and Git actions; Stage 23 has not started
-- See `docs/STAGE22_VERIFICATION.md` for exact evidence, commands, cleanup, and limitations
+- Baseline: Stage 22 completed and pushed at `27b9805`; branch `main`.
+- Stage 23 implements transactional incident notification intents, leased SQLite delivery claims,
+  bounded retries, attempt history, restart recovery, and explicitly approved SafeAction retry.
+- The genuine failed-notification retry was approved by the user and delivered successfully.
+- Final gates passed: **487 backend, 81 desktop, 9 gateway, 32 Android JVM, 19 chaos-demo tests**; live desktop and manual scenarios A?F passed. See [Stage 23 verification](docs/STAGE23_VERIFICATION.md).
+- Stage 23 changes remain uncommitted/unpushed for the user's review. Stage 24 is not started.
+- Stage 22 historical deployment evidence remains in [Stage 22 verification](docs/STAGE22_VERIFICATION.md).
 
 This document replaces the older roadmap and is the current architectural source of truth.
 

@@ -31,10 +31,10 @@ async def lifespan(app: FastAPI):
     from app.notifications.dependencies import get_notification_runtime, get_notification_service
     from app.incidents.dependencies import get_incident_service
     notification_runtime = get_notification_runtime()
-    await notification_runtime.start()
     incident_service = get_incident_service()
     notification_service = get_notification_service()
     incident_service.add_listener(notification_service)
+    await notification_runtime.start()
     try:
         yield
     finally:

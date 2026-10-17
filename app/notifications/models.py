@@ -27,6 +27,31 @@ class DeliveryStatus(str, Enum):
     FAILED = "failed"
 
 
+class FailureCategory(str, Enum):
+    TIMEOUT = "timeout"
+    NETWORK = "network"
+    AUTHENTICATION = "authentication"
+    REJECTED = "destination_rejected"
+    UNAVAILABLE = "destination_unavailable"
+    CONFIGURATION = "invalid_configuration"
+    INTERRUPTED = "interrupted"
+    UNKNOWN = "unknown"
+
+
+class DeliveryAttempt(BaseModel):
+    attempt_id: str
+    notification_id: str
+    attempt_number: int
+    delivery_generation: int
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    outcome: str
+    response_status: Optional[int] = None
+    failure_category: Optional[FailureCategory] = None
+    failure_message: Optional[str] = None
+    latency_ms: Optional[float] = None
+
+
 class ReadStatus(str, Enum):
     """User read/acknowledgement states for notifications."""
 
@@ -75,6 +100,13 @@ class WebhookDestinationConfig(BaseModel):
         clean = v.strip()
         if not (clean.startswith("http://") or clean.startswith("https://")):
             raise ValueError("Webhook URL must start with http:// or https://")
+        try:
+            parsed = urlparse(clean)
+            if not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("Invalid destination authority")
+            _ = parsed.port
+        except ValueError:
+            raise ValueError("Webhook URL must have a valid hostname and port, without embedded credentials") from None
         return clean
 
 
@@ -157,6 +189,11 @@ class Notification(BaseModel):
     recipient: str
     delivery_status: DeliveryStatus
     read_status: ReadStatus = ReadStatus.UNREAD
+    max_attempts: int = Field(default=3, ge=1, le=20)
+    delivery_generation: int = 0
+    claim_token: Optional[str] = None
+    lease_expires_at: Optional[datetime] = None
+    failure_category: Optional[FailureCategory] = None
     attempt_count: int = 0
     next_attempt_at: Optional[datetime] = None
     last_attempt_at: Optional[datetime] = None
@@ -184,6 +221,9 @@ class NotificationResponse(BaseModel):
     recipient: str
     delivery_status: DeliveryStatus
     read_status: ReadStatus
+    max_attempts: int = 3
+    delivery_generation: int = 0
+    failure_category: Optional[FailureCategory] = None
     attempt_count: int
     next_attempt_at: Optional[datetime] = None
     last_attempt_at: Optional[datetime] = None

@@ -122,6 +122,13 @@ class ActionPolicyEngine:
                     risk_level=RiskLevel.HIGH,
                 )
 
+            if notif.delivery_status.value != "failed" or notif.channel.value != "webhook":
+                return PolicyEvaluationResult(status=PolicyStatus.DENIED,
+                    reason="Retry requires a failed webhook notification.")
+            if incident_id and notif.incident_id != incident_id:
+                return PolicyEvaluationResult(status=PolicyStatus.DENIED,
+                    reason="Notification is not linked to the supplied incident.")
+
         # 5. Incident lifecycle check (if incident_id provided)
         if incident_id:
             incident = self._incident_service.get_incident(incident_id)
@@ -161,6 +168,16 @@ class ActionPolicyEngine:
 
     def evaluate_pre_execution(self, action: SafeAction) -> PolicyEvaluationResult:
         """Evaluates policy rules prior to execution (Policy Check #2)."""
+        if action.action_type == ActionType.RETRY_NOTIFICATION:
+            try:
+                target = self._notification_store.get_notification(action.target_id)
+            except Exception:
+                return PolicyEvaluationResult(status=PolicyStatus.DENIED, reason="Notification no longer exists.")
+            if (target.project_id != action.project_id or target.channel.value != "webhook"
+                    or target.delivery_status.value != "failed"
+                    or (action.incident_id and target.incident_id != action.incident_id)):
+                return PolicyEvaluationResult(status=PolicyStatus.DENIED,
+                    reason="Notification retry prerequisites changed before execution.")
         # Re-check incident status if incident_id bound
         if action.incident_id:
             incident = self._incident_service.get_incident(action.incident_id)

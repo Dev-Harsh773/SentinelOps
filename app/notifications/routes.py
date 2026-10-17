@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.notifications.dependencies import get_notification_service
 from app.notifications.models import (
-    DeliveryStatus,
+    DeliveryStatus, DeliveryAttempt,
     NotificationChannel,
     NotificationResponse,
     ReadStatus,
@@ -150,6 +150,7 @@ async def test_subscription(
 )
 def list_notifications(
     project_id: Optional[str] = Query(default=None, description="Filter notifications by project_id"),
+    incident_id: Optional[str] = Query(default=None),
     read_status: Optional[ReadStatus] = Query(default=None, description="Filter by read status"),
     channel: Optional[NotificationChannel] = Query(default=None, description="Filter by delivery channel"),
     delivery_status: Optional[DeliveryStatus] = Query(default=None, description="Filter by delivery status"),
@@ -160,6 +161,7 @@ def list_notifications(
     """Retrieve notifications feed. Preserves historical records even after project deletion."""
     return service.list_notifications(
         project_id=project_id,
+        incident_id=incident_id,
         read_status=read_status,
         channel=channel,
         delivery_status=delivery_status,
@@ -219,16 +221,26 @@ def mark_all_read(
     "/{notification_id}/retry",
     response_model=NotificationResponse,
     status_code=status.HTTP_200_OK,
-    summary="Manually retry a failed notification",
+    summary="Legacy retry endpoint; use an approved SafeAction",
 )
 def retry_notification(
     notification_id: str,
     service: NotificationService = Depends(get_notification_service),
 ) -> NotificationResponse:
-    """Reset a failed notification to 'pending' to trigger delivery worker."""
+    """Retain the legacy URL while refusing an approval-bypassing mutation."""
     try:
-        return service.retry_notification(notification_id)
+        service.get_notification(notification_id)
+        raise NotificationConflictError("Retry requires an explicitly approved RETRY_NOTIFICATION SafeAction; use /actions/propose.")
     except NotificationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except NotificationConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc.message))
+
+
+@router.get("/{notification_id}/attempts", response_model=List[DeliveryAttempt])
+def list_attempts(notification_id: str, service: NotificationService = Depends(get_notification_service)):
+    """Safe durable attempt diagnostics; no payload, URL, secret or headers."""
+    try:
+        return service.list_attempts(notification_id)
+    except NotificationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

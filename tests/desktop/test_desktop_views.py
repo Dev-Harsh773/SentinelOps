@@ -463,3 +463,60 @@ def test_ui_proportions_and_tooltips(qapp):
     assert header_view.sectionSize(3) == 110  # Service
     assert header_view.sectionSize(4) == 75   # Env
     assert header_view.sectionSize(5) == 130  # Created
+
+
+@pytest.mark.parametrize("approve", [True, False])
+def test_stage23_retry_requires_explicit_confirmation(qapp, monkeypatch, approve):
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QMessageBox
+    state = AppState()
+    state.set_connection_status("online")
+    client = MagicMock(spec=SentinelOpsClient)
+    client.propose_action.return_value = SimpleNamespace(policy_status="allowed", action_id="action-23")
+    client.execute_action.return_value = SimpleNamespace(execution_status="succeeded")
+    updated = NotificationDTO(notification_id="n23", project_id="p23", delivery_status="pending")
+    client.get_notification.return_value = updated
+    class ImmediateRunner:
+        def run(self, worker, on_success=None, on_error=None):
+            try:
+                value = worker()
+            except Exception as error:
+                if on_error: on_error(error)
+            else:
+                if on_success: on_success(value)
+    prompts = []
+    def confirm(*args):
+        prompts.append(args)
+        assert not client.approve_action.called
+        return QMessageBox.StandardButton.Yes if approve else QMessageBox.StandardButton.No
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+    view = NotificationsView(client, ImmediateRunner())
+    view._all_notifications = [NotificationDTO(notification_id="n23", project_id="p23",
+        channel="webhook", delivery_status="failed", recipient="https://example.org/<redacted>")]
+    view._retry_server_confirmed("n23")
+    assert len(prompts)==1
+    assert prompts[0][-1]==QMessageBox.StandardButton.No
+    assert "action-23" in prompts[0][2]
+    assert client.approve_action.call_count==int(approve)
+    assert client.execute_action.call_count==int(approve)
+    assert client.reject_action.call_count==int(not approve)
+    client.retry_notification.assert_not_called()
+    assert not view._in_flight_retries
+    view.close()
+
+
+def test_stage23_model_and_delivery_details(qapp):
+    data=dict(notification_id="n23", project_id="p23", channel="webhook", delivery_status="failed",
+        attempt_count=3,max_attempts=3,delivery_generation=2,failure_category="destination_unavailable",
+        failure_reason="HTTP 503",recipient="https://example.org/<redacted>",
+        last_attempt_at="2026-10-18T00:00:00Z",next_attempt_at="2026-10-18T00:01:00Z")
+    n=NotificationDTO.from_dict(data)
+    assert n.last_attempt_at and n.next_attempt_at and n.delivery_generation==2
+    legacy=NotificationDTO.from_dict({"notification_id":"old","project_id":"p"})
+    assert legacy.max_attempts==3 and legacy.delivery_generation==0
+    view=NotificationsView(MagicMock(spec=SentinelOpsClient),MagicMock())
+    view._on_notifications_updated([n],datetime.now(timezone.utc))
+    labels="\n".join(label.text() for label in view.feed_widget.findChildren(QLabel))
+    for text in ("Attempts: 3/3", "retry cycle 2", "Last attempt", "Next retry", "HTTP 503", "destination_unavailable"):
+        assert text in labels
+    view.close()

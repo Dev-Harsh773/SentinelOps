@@ -7,18 +7,18 @@ import hmac
 import json
 import logging
 import time
+import socket
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 import httpx
 
 from app.notifications.models import (
-    DeliveryStatus,
+    DeliveryStatus, FailureCategory, WebhookDestinationConfig,
     Notification,
     SubscriptionTestResponse,
-    sanitize_webhook_recipient,
 )
 from app.notifications.store import SqliteNotificationStore
+from app.notifications.transport_logging import private_post
 
 logger = logging.getLogger("sentinelops.notifications.delivery")
 
@@ -39,7 +39,14 @@ class NotificationDeliveryRuntime:
         max_concurrency: int = 5,
         poll_interval_seconds: float = 1.0,
         base_backoff_seconds: float = 2.0,
+        retry_cap_seconds: float = 60.0,
+        lease_seconds: float = 120.0,
+        enabled: bool = True,
     ) -> None:
+        self.process_intents = None
+        self._enabled = enabled
+        self._retry_cap = retry_cap_seconds
+        self._lease_seconds = lease_seconds
         self._store = store
         self._max_concurrency = max_concurrency
         self._poll_interval = poll_interval_seconds
@@ -64,16 +71,17 @@ class NotificationDeliveryRuntime:
 
     async def start(self) -> None:
         """Start delivery runtime, perform crash recovery, and launch poller loop."""
-        if self._is_running:
+        if self._is_running or not self._enabled:
             return
 
         self._is_running = True
         self._loop = asyncio.get_running_loop()
-        self._http_client = httpx.AsyncClient(timeout=15.0)
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=15.0)
 
         # 1. Crash recovery: recover interrupted delivering tasks
         now = datetime.now(timezone.utc)
-        recovered_count = self._store.recover_in_flight_on_startup(now)
+        recovered_count = await asyncio.to_thread(self._store.recover_in_flight_on_startup, now)
         if recovered_count > 0:
             logger.info("Recovered %d interrupted notification(s) on startup", recovered_count)
 
@@ -116,7 +124,14 @@ class NotificationDeliveryRuntime:
             try:
                 # 1. Claim up to max_concurrency due notifications
                 now = datetime.now(timezone.utc)
-                due_notifications = self._store.claim_due_notifications(limit=self._max_concurrency, now=now)
+                if self.process_intents:
+                    await asyncio.to_thread(self.process_intents)
+                recovered = await asyncio.to_thread(self._store.recover_in_flight_on_startup, now)
+                if recovered:
+                    logger.info("Recovered %d expired notification lease(s)", recovered)
+                capacity = self._max_concurrency - len(self._active_tasks)
+                due_notifications = await asyncio.to_thread(self._store.claim_due_notifications,
+                    limit=capacity, now=now, lease_seconds=self._lease_seconds)
 
                 for notif in due_notifications:
                     task = asyncio.create_task(self._dispatch_with_semaphore(notif))
@@ -133,7 +148,7 @@ class NotificationDeliveryRuntime:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.error("Error in notification poller loop: %s", exc, exc_info=True)
+                logger.error("Notification poller error (%s)", type(exc).__name__)
                 await asyncio.sleep(self._poll_interval)
 
     async def _dispatch_with_semaphore(self, notif: Notification) -> None:
@@ -142,46 +157,36 @@ class NotificationDeliveryRuntime:
             await self._deliver_webhook(notif)
 
     async def _deliver_webhook(self, notif: Notification) -> None:
-        """Execute HTTP POST dispatch for a claimed notification."""
-        config = notif.delivery_config or {}
-        raw_url = config.get("url")
-        auth_secret = config.get("auth_secret")
-        custom_headers = config.get("headers", {})
-        timeout_seconds = float(config.get("timeout_seconds", 10.0))
-
+        """Dispatch once per lease, under a total deadline shorter than the lease."""
         now = datetime.now(timezone.utc)
-
-        # 1. Validate configuration before dispatch
-        if not raw_url or not (raw_url.startswith("http://") or raw_url.startswith("https://")):
-            self._store.update_delivery_outcome(
-                notification_id=notif.notification_id,
-                delivery_status=DeliveryStatus.FAILED,
-                next_attempt_at=None,
-                failure_reason=f"Invalid webhook URL scheme: {raw_url}",
-                now=now,
-            )
+        if not notif.claim_token or not await asyncio.to_thread(self._store.begin_dispatch, notif.notification_id, notif.claim_token, now):
             return
-
+        start = time.perf_counter()
+        logger.info("Notification attempt started id=%s project=%s incident=%s attempt=%d",
+                    notif.notification_id, notif.project_id, notif.incident_id, notif.attempt_count)
+        try:
+            cfg = WebhookDestinationConfig.model_validate(notif.delivery_config or {})
+            raw_url, auth_secret, custom_headers, timeout_seconds = cfg.url, cfg.auth_secret, cfg.headers, cfg.timeout_seconds
+        except Exception:
+            await self._finish(notif, FailureCategory.CONFIGURATION, "Invalid webhook configuration", False, start)
+            return
         from app.common.security import SSRFGuard, SSRFValidationError
-        from app.connectors.redaction import scrub_string
-
-        # If a mock transport is explicitly injected for testing, skip external DNS resolution
-        is_mock_client = self._http_client is not None and getattr(self._http_client, "_transport", None) is not None and isinstance(self._http_client._transport, httpx.MockTransport)
-
-        if not is_mock_client:
+        is_mock = self._http_client is not None and isinstance(self._http_client._transport, httpx.MockTransport)
+        if not is_mock:
             try:
-                SSRFGuard.validate_url(raw_url)
-            except SSRFValidationError as ssrf_exc:
-                self._store.update_delivery_outcome(
-                    notification_id=notif.notification_id,
-                    delivery_status=DeliveryStatus.FAILED,
-                    next_attempt_at=None,
-                    failure_reason=f"SSRF security violation: {ssrf_exc}",
-                    now=now,
-                )
-                logger.error("Blocked webhook delivery for %s: %s", notif.notification_id, ssrf_exc)
+                await asyncio.wait_for(asyncio.to_thread(SSRFGuard.validate_url, raw_url), timeout=2.0)
+            except asyncio.TimeoutError:
+                await self._finish(notif, FailureCategory.TIMEOUT, "Destination validation timed out", True, start)
                 return
-
+            except SSRFValidationError as exc:
+                if isinstance(exc.__cause__, socket.gaierror):
+                    await self._finish(notif, FailureCategory.NETWORK, "Destination name resolution failed", True, start)
+                else:
+                    await self._finish(notif, FailureCategory.CONFIGURATION, "Destination rejected by outbound security policy", False, start)
+                return
+            except Exception:
+                await self._finish(notif, FailureCategory.CONFIGURATION, "Invalid destination", False, start)
+                return
         # 2. Build serialized payload bytes and compute HMAC
         payload_data = {
             "notification_id": notif.notification_id,
@@ -217,86 +222,55 @@ class NotificationDeliveryRuntime:
             signature = hmac.new(auth_secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
             headers["X-SentinelOps-Signature"] = f"sha256={signature}"
 
-        # 4. Dispatch HTTP POST
-        client = self._http_client or httpx.AsyncClient(timeout=timeout_seconds)
+        owned_client = self._http_client is None
+        client = self._http_client or httpx.AsyncClient()
         try:
-            response = await client.post(
-                raw_url,
-                content=body_bytes,
-                headers=headers,
-                timeout=timeout_seconds,
-            )
-            status_code = response.status_code
-
-            if 200 <= status_code < 300:
-                # Success
-                self._store.update_delivery_outcome(
-                    notification_id=notif.notification_id,
-                    delivery_status=DeliveryStatus.DELIVERED,
-                    next_attempt_at=None,
-                    failure_reason=None,
-                    delivered_at=now,
-                    now=now,
-                )
-                logger.info(
-                    "Notification %s delivered successfully to %s (HTTP %d, attempt %d)",
-                    notif.notification_id,
-                    notif.recipient,
-                    status_code,
-                    notif.attempt_count,
-                )
+            # Lock contention or a delayed event loop can consume the lease before
+            # dispatch. Never allow an HTTP request to outlive its remaining lease.
+            remaining = (notif.lease_expires_at - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 1:
+                await self._finish(notif, FailureCategory.INTERRUPTED,
+                    "Delivery lease expired before request", True, start)
                 return
+            # No redirects: a destination cannot redirect credentials to another origin.
+            response = await asyncio.wait_for(private_post(client, raw_url, content=body_bytes, headers=headers,
+                timeout=timeout_seconds, follow_redirects=False), timeout=min(timeout_seconds+1, remaining-1))
+            code = response.status_code
+            if 200 <= code < 300:
+                await self._finish(notif, None, None, False, start, code)
+            else:
+                category = (FailureCategory.AUTHENTICATION if code in (401,403) else
+                            FailureCategory.TIMEOUT if code == 408 else
+                            FailureCategory.UNAVAILABLE if code == 429 or code >= 500 else
+                            FailureCategory.REJECTED)
+                await self._finish(notif, category, f"HTTP {code}", code in (408,429) or 500 <= code <= 599, start, code)
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            await self._finish(notif, FailureCategory.TIMEOUT, "Delivery timed out", True, start)
+        except httpx.RequestError:
+            await self._finish(notif, FailureCategory.NETWORK, "Network transport failure", True, start)
+        except Exception:
+            await self._finish(notif, FailureCategory.UNKNOWN, "Unexpected delivery failure", False, start)
+        finally:
+            if owned_client:
+                await client.aclose()
 
-            # Non-2xx response handling
-            is_retryable = status_code in (408, 429) or (500 <= status_code <= 599)
-            error_reason = scrub_string(f"HTTP {status_code}: {response.text[:200]}")
-            self._handle_failure(notif, is_retryable=is_retryable, error_reason=error_reason, now=now)
-
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RequestError) as exc:
-            # Transport network failure is retryable
-            error_reason = scrub_string(f"Network transport error: {type(exc).__name__}: {str(exc)[:200]}")
-            self._handle_failure(notif, is_retryable=True, error_reason=error_reason, now=now)
-        except Exception as exc:
-            # Unexpected exception
-            error_reason = scrub_string(f"Unexpected client error: {type(exc).__name__}: {str(exc)[:200]}")
-            self._handle_failure(notif, is_retryable=False, error_reason=error_reason, now=now)
-
-    def _handle_failure(self, notif: Notification, is_retryable: bool, error_reason: str, now: datetime) -> None:
-        """Handle delivery failure, evaluate retry policy, and update SQLite state."""
-        max_attempts = 3
-        if is_retryable and notif.attempt_count < max_attempts:
-            # Calculate backoff delay: 2.0 * (2 ** (attempt - 1))
-            delay_seconds = min(self._base_backoff * (2 ** (notif.attempt_count - 1)), 60.0)
-            next_attempt_at = now + timedelta(seconds=delay_seconds)
-            self._store.update_delivery_outcome(
-                notification_id=notif.notification_id,
-                delivery_status=DeliveryStatus.PENDING,
-                next_attempt_at=next_attempt_at,
-                failure_reason=error_reason,
-                now=now,
-            )
-            logger.warning(
-                "Notification %s attempt %d failed (retryable): %s. Next attempt in %.1fs",
-                notif.notification_id,
-                notif.attempt_count,
-                error_reason,
-                delay_seconds,
-            )
-        else:
-            # Terminal failure or attempts exhausted
-            self._store.update_delivery_outcome(
-                notification_id=notif.notification_id,
-                delivery_status=DeliveryStatus.FAILED,
-                next_attempt_at=None,
-                failure_reason=error_reason,
-                now=now,
-            )
-            logger.error(
-                "Notification %s attempt %d failed permanently: %s",
-                notif.notification_id,
-                notif.attempt_count,
-                error_reason,
-            )
+    async def _finish(self, notif, category, reason, retryable, start, code=None):
+        now = datetime.now(timezone.utc)
+        status = DeliveryStatus.DELIVERED if category is None else DeliveryStatus.FAILED
+        next_at = None
+        if retryable and notif.attempt_count < notif.max_attempts:
+            status = DeliveryStatus.PENDING
+            delay = min(self._base_backoff * 2 ** (notif.attempt_count-1), self._retry_cap)
+            next_at = now + timedelta(seconds=delay)
+        accepted = await asyncio.to_thread(self._store.update_delivery_outcome, notif.notification_id, status,
+            next_attempt_at=next_at, failure_reason=reason, now=now,
+            delivered_at=now if status == DeliveryStatus.DELIVERED else None,
+            claim_token=notif.claim_token, failure_category=category, response_status=code,
+            latency_ms=round((time.perf_counter()-start)*1000,2))
+        if accepted:
+            logger.info("Notification outcome id=%s project=%s status=%s category=%s attempt=%d next=%s",
+                notif.notification_id,notif.project_id,status.value,category.value if category else None,
+                notif.attempt_count,next_at)
 
     async def send_diagnostic_ping(
         self,
@@ -315,6 +289,13 @@ class NotificationDeliveryRuntime:
                 subscription_enabled=subscription_enabled,
             )
 
+        from app.common.security import SSRFGuard, SSRFValidationError
+        if not (self._http_client and isinstance(self._http_client._transport, httpx.MockTransport)):
+            try:
+                await asyncio.wait_for(asyncio.to_thread(SSRFGuard.validate_url, url), timeout=2.0)
+            except (SSRFValidationError, asyncio.TimeoutError):
+                return SubscriptionTestResponse(success=False, latency_ms=0.0,
+                    error="Destination rejected or validation timed out", subscription_enabled=subscription_enabled)
         payload_data = {
             "diagnostic": True,
             "event": "sentinelops.test_ping",
@@ -340,14 +321,15 @@ class NotificationDeliveryRuntime:
         start_time = time.perf_counter()
         client = self._http_client or httpx.AsyncClient(timeout=timeout_seconds)
         try:
-            resp = await client.post(url, content=body_bytes, headers=req_headers, timeout=timeout_seconds)
+            resp = await asyncio.wait_for(private_post(client, url, content=body_bytes, headers=req_headers,
+                timeout=timeout_seconds, follow_redirects=False), timeout=min(timeout_seconds,60)+1)
             latency_ms = round((time.perf_counter() - start_time) * 1000.0, 2)
             success = 200 <= resp.status_code < 300
             return SubscriptionTestResponse(
                 success=success,
                 status_code=resp.status_code,
                 latency_ms=latency_ms,
-                error=None if success else f"HTTP {resp.status_code}: {resp.text[:200]}",
+                error=None if success else f"HTTP {resp.status_code}",
                 subscription_enabled=subscription_enabled,
             )
         except Exception as exc:
@@ -356,6 +338,9 @@ class NotificationDeliveryRuntime:
                 success=False,
                 status_code=None,
                 latency_ms=latency_ms,
-                error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                error="Diagnostic transport failure",
                 subscription_enabled=subscription_enabled,
             )
+        finally:
+            if client is not self._http_client:
+                await client.aclose()
