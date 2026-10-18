@@ -22,6 +22,9 @@ def verify_webhook_auth(connector: Connector, raw_body: bytes, headers: Dict[str
     """
     secret = connector.config.auth_secret
     if not secret:
+        from app.common.config import config
+        if config.production:
+            raise WebhookAuthenticationError("Production webhook requires a connector secret")
         # No authentication configured for this connector
         return True
 
@@ -49,7 +52,7 @@ def verify_webhook_auth(connector: Connector, raw_body: bytes, headers: Dict[str
             raise WebhookAuthenticationError(f"Missing required auth token header '{tok_header_name}'")
         if tok_header_name.lower() == "authorization" and token_val.lower().startswith("bearer "):
             token_val = token_val[7:].strip()
-        if not hmac.compare_digest(token_val, secret):
+        if not hmac.compare_digest(token_val.encode(), secret.encode()):
             raise WebhookAuthenticationError("Invalid authentication token")
         return True
 
@@ -70,7 +73,7 @@ def verify_webhook_auth(connector: Connector, raw_body: bytes, headers: Dict[str
             tok_val = normalized_headers[candidate_tok]
             if candidate_tok == "authorization" and tok_val.lower().startswith("bearer "):
                 tok_val = tok_val[7:].strip()
-            if hmac.compare_digest(tok_val, secret):
+            if hmac.compare_digest(tok_val.encode(), secret.encode()):
                 return True
             raise WebhookAuthenticationError("Invalid authentication token")
 

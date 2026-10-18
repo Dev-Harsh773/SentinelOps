@@ -5,8 +5,10 @@ external dependency overhead during early foundation stages while ensuring
 settings are configurable across environments.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
+from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Optional
 
 try:
@@ -71,6 +73,23 @@ class AppConfig:
     notification_retry_cap_seconds: float = 60.0
     notification_lease_seconds: float = 120.0
 
+    runtime_dir: str = "runtime"
+    operator_token: Optional[str] = field(default=None, repr=False)
+    cors_origins: tuple[str, ...] = ()
+    rate_limit_ingest: int = 300
+    rate_limit_auth: int = 30
+    rate_limit_expensive: int = 10
+    rate_limit_keys: int = 4096
+    log_json: bool = False
+
+    @property
+    def production(self) -> bool:
+        return self.app_env.lower() in ("production", "staging")
+
+    @property
+    def database_path(self) -> str:
+        return str(Path(self.runtime_dir) / "sentinelops.db") if self.production else self.watcher_db_path
+
     def __post_init__(self):
         import math
         if not 1 <= self.notification_max_attempts <= 20:
@@ -83,10 +102,46 @@ class AppConfig:
         if self.notification_lease_seconds < 65:
             raise ValueError("Notification lease must exceed the maximum 60-second request deadline")
 
+        if not 1 <= self.port <= 65535:
+            raise ValueError("PORT must be between 1 and 65535")
+        if not 1 <= self.max_request_body_size <= 16 * 1024 * 1024:
+            raise ValueError("MAX_REQUEST_BODY_SIZE must be between 1 and 16777216")
+        for value in (self.rate_limit_ingest, self.rate_limit_auth, self.rate_limit_expensive, self.rate_limit_keys):
+            if value < 1:
+                raise ValueError("Rate limit settings must be positive integers")
+        for origin in self.cors_origins:
+            parsed = urlsplit(origin)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.path or parsed.query or parsed.fragment or parsed.username:
+                raise ValueError("CORS_ALLOWED_ORIGINS must contain explicit HTTP(S) origins only")
+        if self.public_ingress_url:
+            parsed = urlsplit(self.public_ingress_url)
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+                raise ValueError("PUBLIC_INGRESS_URL must be an HTTPS origin without credentials")
+        if self.operator_token and (len(self.operator_token) < 32 or any(c.isspace() for c in self.operator_token)):
+            raise ValueError("SENTINELOPS_OPERATOR_TOKEN must be at least 32 characters without whitespace")
+        if self.production:
+            if not self.operator_token:
+                raise ValueError("Production requires SENTINELOPS_OPERATOR_TOKEN")
+            root = Path(self.runtime_dir)
+            if not root.is_absolute():
+                raise ValueError("Production RUNTIME_DIR must be an absolute persistent-volume path")
+            packaged_root = Path(__file__).resolve().parents[2]
+            if root.resolve().is_relative_to(packaged_root):
+                raise ValueError("Production RUNTIME_DIR must be outside packaged source")
+            if not self.sentinel_workspaces_root or not Path(self.sentinel_workspaces_root).resolve().is_relative_to(root.resolve()):
+                raise ValueError("Production workspaces must be inside RUNTIME_DIR")
+            for path in (self.watcher_db_path, self.project_db_path):
+                if path and Path(path).resolve() != Path(self.database_path).resolve():
+                    raise ValueError("Production stores must use the same RUNTIME_DIR/sentinelops.db")
+            if not self.notifications_enabled:
+                raise ValueError("Production notification worker must be enabled")
+
     @classmethod
     def from_env(cls) -> "AppConfig":
         # Read from environment with sensible local development defaults
         # so the application can run out-of-the-box without requiring a .env file.
+        runtime_dir = os.getenv("RUNTIME_DIR", "runtime")
+        db_path = str(Path(runtime_dir) / "sentinelops.db")
         git_repo_path = os.getenv("GIT_REPOSITORY_PATH", ".")
         git_branch_repo_path = os.getenv("GIT_BRANCH_REPOSITORY_PATH") or git_repo_path
         git_base_branch = os.getenv("GIT_BASE_BRANCH", "main")
@@ -94,6 +149,14 @@ class AppConfig:
         watcher_log_path = os.getenv("WATCHER_LOG_PATH") or demo_log_path
 
         return cls(
+            runtime_dir=runtime_dir,
+            operator_token=os.getenv("SENTINELOPS_OPERATOR_TOKEN") or None,
+            cors_origins=tuple(x.strip().rstrip("/") for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()),
+            rate_limit_ingest=int(os.getenv("RATE_LIMIT_INGEST_PER_MINUTE", "300")),
+            rate_limit_auth=int(os.getenv("RATE_LIMIT_AUTH_PER_MINUTE", "30")),
+            rate_limit_expensive=int(os.getenv("RATE_LIMIT_EXPENSIVE_PER_MINUTE", "10")),
+            rate_limit_keys=int(os.getenv("RATE_LIMIT_MAX_KEYS", "4096")),
+            log_json=os.getenv("LOG_JSON", "false").lower() in ("true", "1", "yes"),
             notifications_enabled=os.getenv("NOTIFICATIONS_ENABLED", "true").lower() in ("true", "1", "yes"),
             notification_poll_interval_seconds=float(os.getenv("NOTIFICATION_POLL_INTERVAL_SECONDS", "1")),
             notification_max_attempts=int(os.getenv("NOTIFICATION_MAX_ATTEMPTS", "3")),
@@ -119,7 +182,7 @@ class AppConfig:
             watcher_log_path=watcher_log_path,
             watcher_poll_interval_seconds=float(os.getenv("WATCHER_POLL_INTERVAL_SECONDS", "1.0")),
             watcher_buffer_capacity=int(os.getenv("WATCHER_BUFFER_CAPACITY", "1000")),
-            watcher_db_path=os.getenv("WATCHER_DB_PATH", "runtime/sentinelops.db"),
+            watcher_db_path=os.getenv("WATCHER_DB_PATH", db_path),
             watcher_db_retention_hours=int(os.getenv("WATCHER_DB_RETENTION_HOURS", "24")),
             watcher_db_max_events=int(os.getenv("WATCHER_DB_MAX_EVENTS", "10000")),
             watcher_health_check_interval_seconds=float(os.getenv("WATCHER_HEALTH_CHECK_INTERVAL_SECONDS", "5.0")),
@@ -142,7 +205,7 @@ class AppConfig:
             trusted_proxies=os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1"),
             telemetry_recency_window_seconds=int(os.getenv("TELEMETRY_RECENCY_WINDOW_SECONDS", "900")),
             public_ingress_url=os.getenv("PUBLIC_INGRESS_URL") or None,
-            sentinel_workspaces_root=os.getenv("SENTINEL_WORKSPACES_ROOT") or None,
+            sentinel_workspaces_root=os.getenv("SENTINEL_WORKSPACES_ROOT") or (str(Path(runtime_dir) / "workspaces") if os.getenv("APP_ENV", "development").lower() in ("production", "staging") else None),
         )
 
 

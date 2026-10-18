@@ -65,6 +65,18 @@ public class SettingsViewModel extends AndroidViewModel {
         });
     }
 
+    public void saveTokenAndTest(String url, String token) {
+        try {
+            if (!token.isEmpty()) appPreferences.setOperatorToken(token);
+            testConnection(url);
+        } catch (RuntimeException error) {
+            isTesting.setValue(false);
+            testResult.setValue("Check the server URL and secure token configuration.");
+        }
+    }
+
+    public void clearOperatorToken() { appPreferences.setOperatorToken(""); }
+
     public void setPollingInterval(int seconds) {
         appPreferences.setPollingIntervalSeconds(seconds);
         pollingInterval.setValue(seconds);

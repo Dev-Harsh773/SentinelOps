@@ -26,7 +26,7 @@ class ProjectRegisterRequest(BaseModel):
         trimmed = v.strip()
         if not trimmed:
             return None
-        if not PROJECT_ID_REGEX.match(trimmed):
+        if trimmed in (".", "..") or not PROJECT_ID_REGEX.fullmatch(trimmed):
             raise ValueError(
                 "project_id must contain only alphanumeric characters, dashes, underscores, and dots."
             )
@@ -58,7 +58,7 @@ class GitHubProjectRegisterRequest(BaseModel):
         trimmed = v.strip()
         if not trimmed:
             return None
-        if not PROJECT_ID_REGEX.match(trimmed):
+        if trimmed in (".", "..") or not PROJECT_ID_REGEX.fullmatch(trimmed):
             raise ValueError(
                 "project_id must contain only alphanumeric characters, dashes, underscores, and dots."
             )

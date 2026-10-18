@@ -1,5 +1,6 @@
 """Centralized dependency injection providers for Incident components."""
 
+from app.common import config as config_module
 from pathlib import Path
 import threading
 from typing import Optional
@@ -39,7 +40,7 @@ def get_incident_repository(db_path: Optional[str] = None) -> IncidentRepository
     global _incident_repository
     with _lock:
         if _incident_repository is None:
-            resolved_db = db_path or _custom_incident_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_incident_db_path or config_module.config.database_path
             _incident_repository = SqliteIncidentRepository(db_path=resolved_db)
         return _incident_repository
 

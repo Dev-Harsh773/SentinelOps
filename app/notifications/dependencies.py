@@ -1,5 +1,6 @@
 """FastAPI dependency injection and lifecycle management for Notifications subsystem."""
 
+from app.common import config as config_module
 from pathlib import Path
 import threading
 from typing import Optional
@@ -33,7 +34,7 @@ def get_notification_store(db_path: Optional[str] = None) -> SqliteNotificationS
     global _notification_store
     with _lock:
         if _notification_store is None:
-            resolved_db = db_path or _custom_notification_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_notification_db_path or config_module.config.database_path
             _notification_store = SqliteNotificationStore(db_path=resolved_db)
         return _notification_store
 

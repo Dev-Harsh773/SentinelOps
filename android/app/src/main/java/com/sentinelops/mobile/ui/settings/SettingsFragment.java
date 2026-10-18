@@ -37,9 +37,14 @@ public class SettingsFragment extends Fragment {
             String url = binding.etBackendUrl.getText() != null ?
                 binding.etBackendUrl.getText().toString().trim() : "";
             if (!url.isEmpty()) {
-                viewModel.testConnection(url);
+                String token = binding.etOperatorToken.getText() == null ? "" :
+                    binding.etOperatorToken.getText().toString().trim();
+                viewModel.saveTokenAndTest(url, token);
+                binding.etOperatorToken.setText("");
             }
         });
+
+        binding.btnClearToken.setOnClickListener(v -> viewModel.clearOperatorToken());
 
         binding.rgPollingInterval.setOnCheckedChangeListener((group, checkedId) -> {
             if (checkedId == R.id.rb_polling_30s) {

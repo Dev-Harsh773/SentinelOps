@@ -1,5 +1,6 @@
 """Dependency injection providers for SentinelOps AI incident investigation."""
 
+from app.common import config as config_module
 from fastapi import Depends
 
 from app.agents.llm import (
@@ -52,7 +53,7 @@ def get_investigation_repository(db_path: Optional[str] = None) -> Investigation
     global _investigation_repository
     with _lock:
         if _investigation_repository is None:
-            resolved_db = db_path or _custom_investigation_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_investigation_db_path or config_module.config.database_path
             _investigation_repository = SqliteInvestigationRepository(db_path=resolved_db)
         return _investigation_repository
 

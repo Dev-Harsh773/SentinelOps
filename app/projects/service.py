@@ -91,6 +91,12 @@ class ProjectService:
         if len(resolved.parts) <= 1 or resolved == resolved.parent:
             raise InvalidWorkspacePathError(f"Filesystem root cannot be used as project workspace: {raw_path}")
 
+        if config_module.config.production:
+            from app.common.security import get_managed_workspaces_root
+            root = get_managed_workspaces_root()
+            if resolved == root or not resolved.is_relative_to(root):
+                raise InvalidWorkspacePathError("Production workspace must be inside the managed root")
+
         canonical_path = resolved.as_posix()
         normalized_path = os.path.normcase(os.path.normpath(str(resolved)))
 
@@ -226,7 +232,9 @@ class ProjectService:
                 idx += 1
 
         for candidate_id in _candidate_generator():
-            target_final = managed_root / candidate_id
+            target_final = (managed_root / candidate_id).resolve()
+            if target_final == managed_root.resolve() or not target_final.is_relative_to(managed_root.resolve()):
+                raise InvalidWorkspacePathError("Project path escapes the managed root")
             if self._project_store.get_project(candidate_id) or target_final.exists():
                 if request.project_id:
                     shutil.rmtree(staging_dir, ignore_errors=True)

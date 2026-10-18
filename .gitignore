@@ -26,6 +26,8 @@ wheels/
 
 # Environment and secrets
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -53,6 +55,9 @@ runtime/*.jsonl
 runtime/*.db
 runtime/*.db-wal
 runtime/*.db-shm
+runtime/stage24*
+*.sqlite
+*.sqlite3
 
 # Android build and local files
 .gradle/

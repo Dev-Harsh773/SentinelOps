@@ -67,7 +67,7 @@ public class IncidentPollingWorker extends Worker {
         }
 
         try {
-            ApiClientFactory clientFactory = new ApiClientFactory(backendUrl);
+            ApiClientFactory clientFactory = new ApiClientFactory(backendUrl, prefs::getOperatorToken);
             Response<List<IncidentDTO>> response = clientFactory.getApi().listIncidents().execute();
             if (!response.isSuccessful() || response.body() == null) {
                 return Result.retry();

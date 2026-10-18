@@ -52,6 +52,25 @@
 
                 </com.google.android.material.textfield.TextInputLayout>
 
+                <com.google.android.material.textfield.TextInputLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:hint="Operator token (blank keeps saved token)">
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/et_operator_token"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:saveEnabled="false"
+                        android:importantForAutofill="no"
+                        android:inputType="textPassword" />
+                </com.google.android.material.textfield.TextInputLayout>
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_clear_token"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Clear saved token" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

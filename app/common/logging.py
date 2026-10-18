@@ -7,7 +7,27 @@ logging frameworks.
 
 import logging
 import sys
+import json
+import re
+from datetime import datetime, timezone
 from app.common.config import config
+
+
+class SafeJsonFormatter(logging.Formatter):
+    """Production logs omit transport URLs and exception text containing secrets."""
+    def format(self, record):
+        message = record.getMessage()
+        for secret in (config.operator_token, config.openai_api_key):
+            if secret:
+                message = message.replace(secret, "[REDACTED]")
+        message = re.sub(r"https?://[^\s\"'<>]+", "[REDACTED_URL]", message)
+        message = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", message)
+        message = re.sub(r"(?i)((?:secret|token|api[_-]?key|authorization)\s*[=:]\s*)\S+", r"\1[REDACTED]", message)
+        result = {"timestamp": datetime.now(timezone.utc).isoformat(),
+                  "level": record.levelname, "logger": record.name, "message": message}
+        if record.exc_info:
+            result["exception_type"] = record.exc_info[0].__name__
+        return json.dumps(result, ensure_ascii=True)
 
 
 def setup_logging() -> logging.Logger:
@@ -25,6 +45,9 @@ def setup_logging() -> logging.Logger:
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True,
     )
+    if config.production or config.log_json:
+        for handler in logging.getLogger().handlers:
+            handler.setFormatter(SafeJsonFormatter())
 
     return logging.getLogger(config.app_name)
 

@@ -1,5 +1,6 @@
 """FastAPI dependency injection and lifecycle management for Safe Action Framework."""
 
+from app.common import config as config_module
 import threading
 from typing import List, Optional
 
@@ -36,7 +37,7 @@ def get_action_store(db_path: Optional[str] = None) -> SqliteActionStore:
     global _action_store
     with _lock:
         if _action_store is None:
-            resolved_db = db_path or _custom_action_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_action_db_path or config_module.config.database_path
             _action_store = SqliteActionStore(db_path=resolved_db)
         return _action_store
 

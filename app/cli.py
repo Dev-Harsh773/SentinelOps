@@ -42,6 +42,13 @@ def main() -> int:
     import os
     if args.app_env:
         os.environ["APP_ENV"] = args.app_env
+    from app.common import config as config_module
+    config_module.config = config_module.AppConfig.from_env()
+    effective = config_module.config
+    if effective.production and args.reload:
+        parser.error("Production does not support reload; run one worker")
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not effective.operator_token:
+        parser.error("Non-local binding requires SENTINELOPS_OPERATOR_TOKEN")
 
     print(f"Starting SentinelOps server on {args.host}:{args.port} (env: {args.app_env})")
     uvicorn.run(
@@ -49,7 +56,10 @@ def main() -> int:
         host=args.host,
         port=args.port,
         reload=args.reload,
-        log_level=config.log_level.lower(),
+        log_level=effective.log_level.lower(),
+        workers=1,
+        proxy_headers=False,
+        access_log=not effective.production,
     )
     return 0
 

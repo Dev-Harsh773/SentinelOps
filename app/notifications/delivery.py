@@ -62,7 +62,7 @@ class NotificationDeliveryRuntime:
 
     @property
     def is_running(self) -> bool:
-        return self._is_running
+        return self._is_running and self._poller_task is not None and not self._poller_task.done()
 
     def wake(self) -> None:
         """Thread-safely trigger the wake event for immediate dispatch."""

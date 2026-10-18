@@ -2172,3 +2172,35 @@ Final Stage 23 gates: **487 backend + 81 desktop**, **9 gateway**, **32 Android 
 failed 3/3 attempts with HTTP 503/category, successful cycle-1 approved retry, redacted destination
 and online project-scoped feed. Final process restart preserved states, attempt counts and audit.
 The local validation services remain available on loopback ports 8023/9023 for operator review.
+
+
+## Stage 24 - Production Deployment, Stable Public Ingress & Operational Hardening
+
+2026-10-18. Implemented from clean, pushed Stage 23 baseline `1d7be35`.
+The stage remains **Pending Verification**: the user explicitly chose to keep
+hosting pending until Git review. No external paid resource was created, no
+commit/push was performed, and Stage 25 was not started.
+
+Added a non-root single-process Docker deployment, exact Python runtime lock,
+allowlisted build context, persistent volume configuration, Render blueprint
+with manual deployment, central operator bearer authentication, connector-secret
+separation, bounded rate/body limits, narrow CORS, safe JSON logs, storage-first
+startup, readiness, OS volume lock, managed source workspace boundaries, and
+validated SQLite online backup/isolated restore. Desktop supports environment
+tokens; Android uses Keystore-backed token storage for foreground/background
+requests. CI validates Python, desktop, gateway, Android and Docker without deployment.
+
+Final regression results: **511 backend, 84 desktop, 9 gateway, 35 Android JVM,
+19 chaos-demo tests passed**. Docker build and production-container startup
+passed. The real-container harness checks authentication, health/readiness,
+body limits, direct telemetry -> HIGH incident -> source-grounded create_order
+investigation/remediation -> durable 503/200 notification retry, desktop HTTP
+client access, pending SafeAction audit, restart/replacement persistence, and
+online backup/isolated restore with all table row counts retained. No SafeAction
+was approved/executed by this validation.
+
+The local fixture is not the hosted chaos-demo E2E. Stable HTTPS deployment,
+provider disk permissions/redeploy, real hosted failure/recovery, hosted desktop
+visual inspection, and Android device/Keystore checks remain pending. See
+[Stage 24 verification](STAGE24_VERIFICATION.md) for file-by-file changes, commands,
+evidence and remaining gates; [deployment guide](DEPLOYMENT.md) for operations.

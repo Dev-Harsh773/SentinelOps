@@ -191,8 +191,9 @@ class SqliteRemediationBranchRepository(RemediationBranchRepository):
     def clear(self) -> None:
         """Clear all stored branches (used in test isolation)."""
         from pathlib import Path
+        from app.common.config import config
         prod_path = str(Path("runtime/sentinelops.db").resolve())
-        if self._db_path != ":memory:" and Path(self._db_path).resolve() == Path(prod_path):
+        if self._db_path != ":memory:" and Path(self._db_path).resolve() in (Path(prod_path), Path(config.database_path).resolve()):
             raise RuntimeError(
                 f"Refusing to clear production remediation branch database at {self._db_path}"
             )

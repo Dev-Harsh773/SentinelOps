@@ -128,7 +128,7 @@ async def ingest_webhook(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Malformed JSON body: {exc}",
+            detail="Malformed JSON body",
         )
 
     try:
@@ -136,7 +136,7 @@ async def ingest_webhook(
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
+            detail="Invalid telemetry payload",
         )
 
     try:

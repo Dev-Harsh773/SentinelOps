@@ -2,6 +2,15 @@
 
 ## 1. Project Status
 
+Stage 24 - Production Deployment, Stable Public Ingress & Operational Hardening: **Pending Verification**. Baseline `1d7be35`; no commit/push; Stage 25 out of scope.
+
+The non-root production Docker image, central operator authentication, shared persistent
+SQLite path, readiness, backups, client authentication and CI are implemented. Local
+container restart/replacement preserves representative domain records; controlled
+notification retry and isolated restore pass. Stable HTTPS hosting and hosted chaos
+E2E remain pending. See [Stage 24 verification](docs/STAGE24_VERIFICATION.md) and
+[deployment guide](docs/DEPLOYMENT.md).
+
 Stage 23 - Durable Alert Delivery, Notification Reliability & Recovery: **Approved**.
 
 - Baseline: Stage 22 completed and pushed at `27b9805`; branch `main`.
@@ -9,7 +18,7 @@ Stage 23 - Durable Alert Delivery, Notification Reliability & Recovery: **Approv
   bounded retries, attempt history, restart recovery, and explicitly approved SafeAction retry.
 - The genuine failed-notification retry was approved by the user and delivered successfully.
 - Final gates passed: **487 backend, 81 desktop, 9 gateway, 32 Android JVM, 19 chaos-demo tests**; live desktop and manual scenarios A?F passed. See [Stage 23 verification](docs/STAGE23_VERIFICATION.md).
-- Stage 23 changes remain uncommitted/unpushed for the user's review. Stage 24 is not started.
+- Stage 23 is committed and pushed at `1d7be35`; Stage 24 changes remain uncommitted/unpushed for review.
 - Stage 22 historical deployment evidence remains in [Stage 22 verification](docs/STAGE22_VERIFICATION.md).
 
 This document replaces the older roadmap and is the current architectural source of truth.

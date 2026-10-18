@@ -1,3 +1,4 @@
+from app.common import config as config_module
 import threading
 from typing import Optional
 from fastapi import Depends
@@ -69,7 +70,7 @@ def get_remediation_repository(db_path: Optional[str] = None) -> RemediationRepo
     global _remediation_repository
     with _lock:
         if _remediation_repository is None:
-            resolved_db = db_path or _custom_remediation_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_remediation_db_path or config_module.config.database_path
             _remediation_repository = SqliteRemediationRepository(db_path=resolved_db)
         return _remediation_repository
 
@@ -79,7 +80,7 @@ def get_review_repository(db_path: Optional[str] = None) -> RemediationReviewRep
     global _review_repository
     with _lock:
         if _review_repository is None:
-            resolved_db = db_path or _custom_remediation_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_remediation_db_path or config_module.config.database_path
             _review_repository = SqliteRemediationReviewRepository(db_path=resolved_db)
         return _review_repository
 
@@ -89,7 +90,7 @@ def get_branch_repository(db_path: Optional[str] = None) -> RemediationBranchRep
     global _branch_repository
     with _lock:
         if _branch_repository is None:
-            resolved_db = db_path or _custom_remediation_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_remediation_db_path or config_module.config.database_path
             _branch_repository = SqliteRemediationBranchRepository(db_path=resolved_db)
         return _branch_repository
 

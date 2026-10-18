@@ -5,6 +5,8 @@ Converts HTTP errors to typed SentinelOps exceptions.
 """
 
 from typing import Any, Dict, List, Optional
+import os
+from urllib.parse import urlsplit
 import httpx
 
 from desktop.api.exceptions import (
@@ -42,15 +44,26 @@ class SentinelOpsClient:
         timeout: float = 5.0,
         reindex_timeout: float = 30.0,
         transport: Optional[httpx.BaseTransport] = None,
+        operator_token: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.reindex_timeout = reindex_timeout
+        token = operator_token if operator_token is not None else os.getenv("SENTINELOPS_OPERATOR_TOKEN", "")
+        parsed = urlsplit(self.base_url)
+        if parsed.username or parsed.password:
+            raise ValueError("Backend URL must not contain credentials")
+        if token and parsed.scheme != "https" and parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+            raise ValueError("Operator authentication requires HTTPS outside localhost")
+        headers = {"User-Agent": "SentinelOps-ControlCenter/0.1.0"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
         self._client = httpx.Client(
             base_url=self.base_url,
             timeout=self.timeout,
             transport=transport,
-            headers={"User-Agent": "SentinelOps-ControlCenter/0.1.0"},
+            headers=headers,
+            follow_redirects=False,
         )
 
     def close(self) -> None:
@@ -87,6 +100,11 @@ class SentinelOpsClient:
             return resp.json() if resp.content else {}
         if resp.status_code == 204:
             return None
+        if resp.status_code == 401:
+            raise SentinelOpsApiError(
+                "Operator authentication failed. Configure SENTINELOPS_OPERATOR_TOKEN and restart the desktop.",
+                status_code=401, detail="Operator authentication required",
+            )
 
         # Extract backend error detail string safely
         detail = ""

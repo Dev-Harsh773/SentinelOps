@@ -11,39 +11,49 @@ from app.common.logging import logger
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown lifecycle events."""
     logger.info("Starting %s in %s environment", config.app_name, config.app_env)
-    # Reconcile orphaned SafeAction execution claims across backend restart
-    from app.actions.dependencies import reconcile_interrupted_actions
-    reconciled_actions = reconcile_interrupted_actions()
-    if reconciled_actions:
-        logger.warning(
-            "Reconciled %d orphaned SafeAction execution(s) across backend restart to ABORTED: %s",
-            len(reconciled_actions),
-            [a.action_id for a in reconciled_actions],
-        )
-    watcher_service = None
-    if config.watcher_enabled:
-        from app.watcher.dependencies import get_watcher_service
-        watcher_service = get_watcher_service()
-        await watcher_service.start()
-    from app.connectors.dependencies import get_connector_runtime
-    connector_runtime = get_connector_runtime()
-    await connector_runtime.start()
-    from app.notifications.dependencies import get_notification_runtime, get_notification_service
-    from app.incidents.dependencies import get_incident_service
-    notification_runtime = get_notification_runtime()
-    incident_service = get_incident_service()
-    notification_service = get_notification_service()
-    incident_service.add_listener(notification_service)
-    await notification_runtime.start()
+    app.state.ready = False
+    watcher_service = connector_runtime = notification_runtime = None
+    instance_lock = None
     try:
+        if config.production:
+            from app.common.instance_lock import InstanceLock
+            instance_lock = InstanceLock(config.runtime_dir)
+        from app.common.storage import initialize_storage
+        initialize_storage()
+        # Reconcile orphaned SafeAction execution claims across backend restart
+        from app.actions.dependencies import reconcile_interrupted_actions
+        reconciled_actions = reconcile_interrupted_actions()
+        if reconciled_actions:
+            logger.warning(
+                "Reconciled %d orphaned SafeAction execution(s) across backend restart to ABORTED: %s",
+                len(reconciled_actions),
+                [a.action_id for a in reconciled_actions],
+            )
+        if config.watcher_enabled:
+            from app.watcher.dependencies import get_watcher_service
+            watcher_service = get_watcher_service()
+            await watcher_service.start()
+        from app.connectors.dependencies import get_connector_runtime
+        connector_runtime = get_connector_runtime()
+        await connector_runtime.start()
+        from app.notifications.dependencies import get_notification_runtime, get_notification_service
+        from app.incidents.dependencies import get_incident_service
+        notification_runtime = get_notification_runtime()
+        incident_service = get_incident_service()
+        notification_service = get_notification_service()
+        incident_service.add_listener(notification_service)
+        await notification_runtime.start()
+        app.state.notification_runtime = notification_runtime
+        app.state.ready = True
         yield
     finally:
-        if notification_runtime:
-            await notification_runtime.stop()
-        if connector_runtime:
-            await connector_runtime.stop()
-        if watcher_service:
-            await watcher_service.stop()
+        app.state.ready = False
+        for runtime in (notification_runtime, connector_runtime, watcher_service):
+            if runtime:
+                try:
+                    await runtime.stop()
+                except Exception as exc:
+                    logger.error("Worker shutdown failed category=%s", type(exc).__name__)
         from app.watcher.dependencies import reset_watcher_state
         reset_watcher_state()
         from app.remediation.dependencies import close_remediation_repositories
@@ -64,6 +74,8 @@ async def lifespan(app: FastAPI):
         close_project_store()
         from app.incidents.dependencies import close_incident_repository
         close_incident_repository()
+        if instance_lock:
+            instance_lock.close()
         logger.info("Shutting down %s", config.app_name)
 
 
@@ -84,14 +96,28 @@ def create_app() -> FastAPI:
     )
 
     # Register security middleware
-    application.add_middleware(SecurityHeadersMiddleware)
+    from app.common.access import OperatorAccessMiddleware
+    from starlette.middleware.cors import CORSMiddleware
     application.add_middleware(ContentLengthAndStreamLimitMiddleware)
+    application.add_middleware(OperatorAccessMiddleware)
+    if config.cors_origins:
+        application.add_middleware(CORSMiddleware, allow_origins=list(config.cors_origins),
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"], allow_credentials=False)
+    application.add_middleware(SecurityHeadersMiddleware)
 
     # Register aggregated API routes
     application.include_router(api_router)
 
     from fastapi.responses import JSONResponse
     from app.agents.models import InvestigationLLMError
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request, exc):
+        if config.production:
+            return JSONResponse(status_code=422, content={"detail": "Invalid request payload"})
+        from fastapi.exception_handlers import request_validation_exception_handler
+        return await request_validation_exception_handler(request, exc)
 
     @application.exception_handler(InvestigationLLMError)
     async def investigation_llm_exception_handler(request, exc: InvestigationLLMError):
@@ -107,7 +133,7 @@ def create_app() -> FastAPI:
             raise exc
 
         trace_id = str(uuid.uuid4())
-        logger.exception("Unhandled server exception [trace_id=%s]: %s", trace_id, exc)
+        logger.error("Unhandled server exception trace_id=%s category=%s", trace_id, type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content={

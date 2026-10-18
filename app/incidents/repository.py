@@ -247,8 +247,9 @@ class SqliteIncidentRepository(IncidentRepository):
 
     def clear(self) -> None:
         """Reset internal storage. Reserved strictly for test isolation."""
+        from app.common.config import config
         prod_path = str(Path("runtime/sentinelops.db").resolve())
-        if self._db_path != ":memory:" and Path(self._db_path).resolve() == Path(prod_path):
+        if self._db_path != ":memory:" and Path(self._db_path).resolve() in (Path(prod_path), Path(config.database_path).resolve()):
             raise RuntimeError(
                 f"Refusing to clear production incident database at {self._db_path}"
             )

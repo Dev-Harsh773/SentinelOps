@@ -1,5 +1,6 @@
 """FastAPI dependency injection and lifecycle management for Connectors subsystem."""
 
+from app.common import config as config_module
 from pathlib import Path
 import threading
 from typing import Optional
@@ -34,7 +35,7 @@ def get_connector_store(db_path: Optional[str] = None) -> SqliteConnectorStore:
     global _connector_store
     with _lock:
         if _connector_store is None:
-            resolved_db = db_path or _custom_connector_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_connector_db_path or config_module.config.database_path
             _connector_store = SqliteConnectorStore(db_path=resolved_db)
         return _connector_store
 

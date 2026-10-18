@@ -1,5 +1,6 @@
 """Dependency injection providers for Telemetry and Evidence collection."""
 
+from app.common import config as config_module
 from fastapi import Depends
 
 from app.common.config import config
@@ -32,7 +33,7 @@ def get_evidence_repository(db_path: Optional[str] = None) -> EvidenceRepository
     global _evidence_repository
     with _lock:
         if _evidence_repository is None:
-            resolved_db = db_path or _custom_evidence_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_evidence_db_path or config_module.config.database_path
             _evidence_repository = SqliteEvidenceRepository(db_path=resolved_db)
         return _evidence_repository
 

@@ -75,45 +75,39 @@ class ContentLengthAndStreamLimitMiddleware:
         headers = Headers(scope=scope)
         content_length_str = headers.get("content-length")
 
-        # 1. Fast pre-check: Content-Length header
         if content_length_str:
             try:
-                content_length = int(content_length_str)
-                if content_length > self.max_body_size:
-                    response = JSONResponse(
-                        status_code=413,
-                        content={"detail": f"Request body too large ({content_length} bytes > {self.max_body_size} bytes cap)."},
-                    )
-                    await response(scope, receive, send)
-                    return
+                length = int(content_length_str)
+                if length < 0:
+                    raise ValueError()
             except ValueError:
-                pass
-
-        # 2. Streaming & chunked transfer limit tracking
-        received_bytes = 0
-
-        async def tracked_receive() -> Message:
-            nonlocal received_bytes
+                await JSONResponse({"detail":"Invalid Content-Length"},status_code=400)(scope,receive,send)
+                return
+            if length > self.max_body_size:
+                await JSONResponse({"detail":"Request body too large"},status_code=413)(scope,receive,send)
+                return
+        # Validate the complete bounded stream before invoking parsers/route side effects.
+        # Raising from receive inside FastAPI can otherwise turn an oversized body into 400.
+        body = bytearray()
+        while True:
             message = await receive()
-            if message["type"] == "http.request":
-                body_chunk = message.get("body", b"")
-                received_bytes += len(body_chunk)
-                if received_bytes > self.max_body_size:
-                    # Body exceeded limit during stream
-                    raise BodySizeLimitExceededError(
-                        f"Streamed body exceeded maximum allowed size of {self.max_body_size} bytes."
-                    )
-            return message
-
-        try:
-            await self.app(scope, tracked_receive, send)
-        except BodySizeLimitExceededError as exc:
-            logger.warning("Streaming body size limit exceeded: %s", exc)
-            response = JSONResponse(
-                status_code=413,
-                content={"detail": str(exc)},
-            )
-            await response(scope, receive, send)
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if len(body) + len(chunk) > self.max_body_size:
+                await JSONResponse({"detail":"Request body too large"},status_code=413)(scope,receive,send)
+                return
+            body.extend(chunk)
+            if not message.get("more_body",False):
+                break
+        consumed = False
+        async def bounded_receive():
+            nonlocal consumed
+            if consumed:
+                return await receive()
+            consumed = True
+            return {"type":"http.request","body":bytes(body),"more_body":False}
+        await self.app(scope,bounded_receive,send)
 
 
 class BodySizeLimitExceededError(Exception):

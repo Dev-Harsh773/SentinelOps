@@ -1,0 +1,11 @@
+# Allowlist: no credentials, repositories, databases, or test artifacts in context.
+**
+!Dockerfile
+!requirements-production.lock
+!app/
+!app/**
+**/__pycache__/
+**/*.pyc
+**/.env*
+**/*.db
+**/*.sqlite*

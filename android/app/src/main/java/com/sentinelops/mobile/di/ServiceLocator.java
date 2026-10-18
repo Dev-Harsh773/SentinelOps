@@ -31,7 +31,7 @@ public class ServiceLocator {
 
     private ServiceLocator(Context context) {
         this.appPreferences = new AppPreferences(context.getApplicationContext());
-        this.apiClientFactory = new ApiClientFactory(appPreferences.getBackendUrl());
+        this.apiClientFactory = new ApiClientFactory(appPreferences.getBackendUrl(), appPreferences::getOperatorToken);
         this.backendHealthRepository = new BackendHealthRepository(apiClientFactory);
         this.projectRepository = new ProjectRepository(apiClientFactory, backendHealthRepository);
         this.incidentRepository = new IncidentRepository(apiClientFactory, backendHealthRepository);

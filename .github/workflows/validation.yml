@@ -1,0 +1,37 @@
+name: Validate deployment candidate
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  python-and-container:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      APP_ENV: development
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-production.lock
+      - run: pip install -r requirements-production.lock pytest pytest-asyncio pytest-mock PyQt6
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0
+      - run: python -m pytest tests --ignore=tests/desktop -q
+      - run: python -m pytest tests/desktop -q
+      - run: python -m pytest tools/validation_gateway/test_gateway.py -q
+      - run: git diff --check
+      - run: docker build -t sentinelops:stage24 .
+      - run: python -m tools.stage24_container_validation
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: bash gradlew testDebugUnitTest --rerun-tasks
+        working-directory: android

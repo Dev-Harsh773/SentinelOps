@@ -1,0 +1,13 @@
+services:
+  sentinelops:
+    build: .
+    ports:
+      - "127.0.0.1:8024:8000"
+    environment:
+      SENTINELOPS_OPERATOR_TOKEN: ${SENTINELOPS_OPERATOR_TOKEN:?Set a strong operator token}
+    volumes:
+      - sentinelops-data:/var/lib/sentinelops
+    restart: unless-stopped
+    stop_grace_period: 30s
+volumes:
+  sentinelops-data:

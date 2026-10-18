@@ -1,5 +1,6 @@
 """Centralized dependency injection providers for Incident Memory components."""
 
+from app.common import config as config_module
 from functools import lru_cache
 import threading
 from typing import Optional
@@ -34,7 +35,7 @@ def get_memory_repository(db_path: Optional[str] = None) -> IncidentMemoryReposi
     global _memory_repository
     with _lock:
         if _memory_repository is None:
-            resolved_db = db_path or _custom_memory_db_path or "runtime/sentinelops.db"
+            resolved_db = db_path or _custom_memory_db_path or config_module.config.database_path
             _memory_repository = SqliteIncidentMemoryRepository(db_path=resolved_db)
         return _memory_repository
 

@@ -238,6 +238,12 @@ class ProjectKnowledgeService:
         self, project: Project
     ) -> Tuple[List[CodeChunk], List[DetectedRoute], List[ConfigFileInfo], int, int]:
         """Scan workspace and parse chunks, routes, and configs."""
+        from app.common import config as config_module
+        if config_module.config.production:
+            root = Path(config_module.config.sentinel_workspaces_root).resolve()
+            workspace = Path(project.workspace_path).resolve()
+            if workspace == root or not workspace.is_relative_to(root):
+                raise ValueError("Production source workspace must remain inside the managed root")
         discovered = self._scanner.scan(project.workspace_path)
         all_chunks: List[CodeChunk] = []
         files_indexed = 0

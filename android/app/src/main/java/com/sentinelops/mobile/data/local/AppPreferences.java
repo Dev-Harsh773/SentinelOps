@@ -22,6 +22,9 @@ public class AppPreferences {
         return prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL);
     }
 
+    public String getOperatorToken() { return OperatorTokenStore.read(prefs); }
+    public void setOperatorToken(String token) { OperatorTokenStore.save(prefs, token); }
+
     public void setBackendUrl(String url) {
         prefs.edit().putString(KEY_BACKEND_URL, url.trim()).apply();
     }
